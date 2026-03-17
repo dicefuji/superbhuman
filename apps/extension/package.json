@@ -1,0 +1,25 @@
+{
+  "name": "@superbhuman/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @superbhuman/shared build && wxt build",
+    "dev": "wxt",
+    "lint": "pnpm --filter @superbhuman/shared build && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck": "pnpm --filter @superbhuman/shared build && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@superbhuman/shared": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "wxt": "^0.20.6"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.306",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "vitest": "^3.1.1"
+  }
+}
