@@ -2,22 +2,11 @@ import type { ApiSession, AuthDiagnostics, UserPreferences } from "@superbhuman/
 import { useEffect, useMemo, useState } from "react";
 
 import { checkTrackingApiHealth, getApiSession, getAuthDiagnostics, signInWithGoogle } from "../lib/gmailApi";
+import { TRACKING_API_BASE_URL } from "../env";
+import { isTrackingBetaBuild, resolveApiBaseUrl } from "../lib/apiBaseUrl";
+import { getMissingGoogleScopes, getRequiredGoogleScopes, hasConfiguredGoogleOAuth, hasRequiredGoogleScopes } from "../lib/googleAuth";
 import { formatTimestamp } from "../lib/runtime";
-import {
-  assertSupportedTrackingApiBaseUrl,
-  getTrackingOrigin,
-  isLocalApiBaseUrl,
-  isPublicHttpsApiBaseUrl,
-  normalizeApiBaseUrl
-} from "../lib/apiBaseUrl";
-import {
-  getMissingGoogleScopes,
-  getRequiredGoogleScopes,
-  hasConfiguredGoogleOAuth,
-  hasRequiredGoogleScopes
-} from "../lib/googleAuth";
 import { loadPreferences, savePreferences } from "../lib/storage";
-import { ensureTrackingOriginPermission, hasTrackingOriginPermission } from "../lib/trackingPermissions";
 
 type ManifestWithOAuth = chrome.runtime.Manifest & {
   oauth2?: {
@@ -26,6 +15,8 @@ type ManifestWithOAuth = chrome.runtime.Manifest & {
   };
 };
 
+type TrackingHealthStatus = "disabled" | "checking" | "reachable" | "error";
+
 function formatScopeLabel(scope: string): string {
   return scope.replace("https://www.googleapis.com/auth/", "").replace("https://www.googleapis.com/", "");
 }
@@ -33,15 +24,17 @@ function formatScopeLabel(scope: string): string {
 export function OptionsApp() {
   const manifest = useMemo(() => chrome.runtime.getManifest() as ManifestWithOAuth, []);
   const requiredScopes = useMemo(() => getRequiredGoogleScopes(manifest), [manifest]);
+  const trackingBetaEnabled = useMemo(() => isTrackingBetaBuild(), []);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [checkingApi, setCheckingApi] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [checkingTracking, setCheckingTracking] = useState(false);
   const [session, setSession] = useState<ApiSession | null>(null);
   const [authDiagnostics, setAuthDiagnostics] = useState<AuthDiagnostics | null>(null);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
-  const [trackingPermissionGranted, setTrackingPermissionGranted] = useState(false);
+  const [trackingHealth, setTrackingHealth] = useState<TrackingHealthStatus>(trackingBetaEnabled ? "checking" : "disabled");
+  const [trackingHealthMessage, setTrackingHealthMessage] = useState<string>("");
   const [status, setStatus] = useState<string>("");
 
   useEffect(() => {
@@ -50,10 +43,35 @@ export function OptionsApp() {
       setPreferences(loadedPreferences);
       setSession(apiSession);
       setAuthDiagnostics(diagnostics);
-      setTrackingPermissionGranted(await hasTrackingOriginPermission(loadedPreferences.apiBaseUrl).catch(() => false));
       setLoading(false);
     });
   }, []);
+
+  useEffect(() => {
+    if (!trackingBetaEnabled) {
+      setTrackingHealth("disabled");
+      setTrackingHealthMessage("Read statuses are not available in this build.");
+      return;
+    }
+
+    const refresh = async () => {
+      setCheckingTracking(true);
+      setTrackingHealth("checking");
+      try {
+        const apiBaseUrl = resolveApiBaseUrl();
+        await checkTrackingApiHealth();
+        setTrackingHealth("reachable");
+        setTrackingHealthMessage(`Beta backend reachable at ${new URL(apiBaseUrl).origin}.`);
+      } catch (error) {
+        setTrackingHealth("error");
+        setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the beta tracking backend.");
+      } finally {
+        setCheckingTracking(false);
+      }
+    };
+
+    void refresh();
+  }, [trackingBetaEnabled]);
 
   useEffect(() => {
     if (!connecting) {
@@ -79,41 +97,14 @@ export function OptionsApp() {
     };
   }, [connecting]);
 
-  useEffect(() => {
-    if (!preferences) {
-      return;
-    }
-
-    void hasTrackingOriginPermission(preferences.apiBaseUrl)
-      .then(setTrackingPermissionGranted)
-      .catch(() => setTrackingPermissionGranted(false));
-  }, [preferences?.apiBaseUrl]);
-
   if (loading || !preferences) {
     return <main className="sb-options">Loading…</main>;
   }
 
-  const normalizedApiBaseUrl = (() => {
-    try {
-      return normalizeApiBaseUrl(preferences.apiBaseUrl);
-    } catch {
-      return undefined;
-    }
-  })();
-  const apiUrlError = (() => {
-    try {
-      normalizeApiBaseUrl(preferences.apiBaseUrl);
-      return undefined;
-    } catch (error) {
-      return error instanceof Error ? error.message : "Tracking API URL is invalid.";
-    }
-  })();
   const oauthConfigured = hasConfiguredGoogleOAuth(manifest);
   const missingScopes = getMissingGoogleScopes(session?.grantedScopes, requiredScopes);
   const authReady = Boolean(session && hasRequiredGoogleScopes(session, requiredScopes));
-  const apiIsLocal = normalizedApiBaseUrl ? isLocalApiBaseUrl(normalizedApiBaseUrl) : false;
-  const apiIsPublicHttps = normalizedApiBaseUrl ? isPublicHttpsApiBaseUrl(normalizedApiBaseUrl) : false;
-  const apiNeedsPermission = apiIsPublicHttps && !trackingPermissionGranted;
+  const trackingApiOrigin = trackingBetaEnabled && TRACKING_API_BASE_URL ? new URL(resolveApiBaseUrl()).origin : undefined;
 
   async function refreshAuthDiagnostics() {
     try {
@@ -123,39 +114,36 @@ export function OptionsApp() {
     }
   }
 
+  async function refreshTrackingHealth() {
+    if (!trackingBetaEnabled) {
+      setTrackingHealth("disabled");
+      setTrackingHealthMessage("Read statuses are not available in this build.");
+      return;
+    }
+
+    setCheckingTracking(true);
+    setTrackingHealth("checking");
+    try {
+      await checkTrackingApiHealth();
+      setTrackingHealth("reachable");
+      setTrackingHealthMessage(`Beta backend reachable at ${trackingApiOrigin}.`);
+    } catch (error) {
+      setTrackingHealth("error");
+      setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the beta tracking backend.");
+    } finally {
+      setCheckingTracking(false);
+    }
+  }
+
   async function save() {
-    const currentPreferences = preferences;
-    if (!currentPreferences) {
+    if (!preferences) {
       return;
     }
 
     setSaving(true);
     try {
-      const normalizedUrl = assertSupportedTrackingApiBaseUrl(currentPreferences.apiBaseUrl);
-      let approvedTrackingOrigin = currentPreferences.approvedTrackingOrigin;
-
-      if (!isLocalApiBaseUrl(normalizedUrl)) {
-        const permission = await ensureTrackingOriginPermission(normalizedUrl);
-        approvedTrackingOrigin = permission.origin;
-        setTrackingPermissionGranted(permission.granted);
-      } else {
-        approvedTrackingOrigin = undefined;
-        setTrackingPermissionGranted(true);
-      }
-
-      const nextPreferences: UserPreferences = {
-        ...currentPreferences,
-        apiBaseUrl: normalizedUrl,
-        approvedTrackingOrigin
-      };
-
-      await savePreferences(nextPreferences);
-      setPreferences(nextPreferences);
-      setStatus(
-        approvedTrackingOrigin || isLocalApiBaseUrl(normalizedUrl)
-          ? "Saved."
-          : `Saved, but Chrome permission for ${getTrackingOrigin(normalizedUrl)} is still missing.`
-      );
+      await savePreferences(preferences);
+      setStatus("Saved.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not save preferences.");
     } finally {
@@ -182,68 +170,12 @@ export function OptionsApp() {
     }
   }
 
-  async function checkApi() {
-    const currentPreferences = preferences;
-    if (!currentPreferences) {
-      return;
-    }
-
-    setCheckingApi(true);
-    try {
-      const normalizedUrl = assertSupportedTrackingApiBaseUrl(currentPreferences.apiBaseUrl);
-
-      let approvedTrackingOrigin = currentPreferences.approvedTrackingOrigin;
-      if (!isLocalApiBaseUrl(normalizedUrl)) {
-        const permission = await ensureTrackingOriginPermission(normalizedUrl);
-        setTrackingPermissionGranted(permission.granted);
-        approvedTrackingOrigin = permission.origin;
-
-        if (!permission.granted) {
-          const nextPreferences: UserPreferences = {
-            ...currentPreferences,
-            apiBaseUrl: normalizedUrl,
-            approvedTrackingOrigin: undefined,
-            lastApiHealthCheckAt: new Date().toISOString(),
-            lastApiHealthStatus: "error" as const
-          };
-          await savePreferences(nextPreferences);
-          setPreferences(nextPreferences);
-          setStatus(`Chrome permission for ${getTrackingOrigin(normalizedUrl)} was not granted.`);
-          return;
-        }
-      }
-
-      await checkTrackingApiHealth(normalizedUrl);
-      const nextPreferences: UserPreferences = {
-        ...currentPreferences,
-        apiBaseUrl: normalizedUrl,
-        approvedTrackingOrigin,
-        lastApiHealthCheckAt: new Date().toISOString(),
-        lastApiHealthStatus: "ok" as const
-      };
-      await savePreferences(nextPreferences);
-      setPreferences(nextPreferences);
-      setStatus(`Tracking API reachable at ${normalizedUrl}.`);
-    } catch (error) {
-      const nextPreferences: UserPreferences = {
-        ...currentPreferences,
-        lastApiHealthCheckAt: new Date().toISOString(),
-        lastApiHealthStatus: "error" as const
-      };
-      await savePreferences(nextPreferences);
-      setPreferences(nextPreferences);
-      setStatus(error instanceof Error ? error.message : "Tracking API unreachable.");
-    } finally {
-      setCheckingApi(false);
-    }
-  }
-
   return (
     <main className="sb-options">
       <section className="sb-options-card">
         <h1 className="sb-panel-title">Superbhuman</h1>
         <p className="sb-panel-copy">
-          Private-first Gmail acceleration with a command center, split inbox, mass archive, and read status tracking.
+          Gmail power layer for keyboard-driven triage, split inboxes, and fast bulk actions.
         </p>
 
         <div className="sb-field">
@@ -278,10 +210,10 @@ export function OptionsApp() {
             </div>
             <p className="sb-muted">
               {authReady
-                ? "Gmail API features are unlocked."
+                ? "Gmail API features are unlocked and do not require any Superbhuman backend."
                 : oauthConfigured
-                  ? "Connect Gmail and approve the required scopes before using mass archive or sender/company nuke."
-                  : "This extension build does not yet have a Google OAuth client in the manifest."}
+                  ? "Connect Gmail and approve the required scopes before using Gmail-powered actions."
+                  : "This extension build does not yet include a Google OAuth client."}
             </p>
             <p className="sb-muted">Required scopes: {requiredScopes.map(formatScopeLabel).join(", ")}</p>
             {session?.grantedScopes?.length ? (
@@ -294,71 +226,44 @@ export function OptionsApp() {
 
           <section className="sb-status-card">
             <div className="sb-read-status-row">
-              <strong>Tracking API</strong>
+              <strong>Read Statuses</strong>
               <span
                 className={`sb-status-pill ${
-                  preferences.lastApiHealthStatus === "ok"
+                  trackingHealth === "reachable"
                     ? ""
-                    : preferences.lastApiHealthStatus === "error"
+                    : trackingHealth === "error"
                       ? "is-danger"
-                      : "is-neutral"
+                      : trackingHealth === "checking"
+                        ? "is-warning"
+                        : "is-neutral"
                 }`}
               >
-                {preferences.lastApiHealthStatus === "ok"
-                  ? "Reachable"
-                  : preferences.lastApiHealthStatus === "error"
-                    ? "Needs attention"
-                    : "Unchecked"}
+                {trackingHealth === "reachable"
+                  ? "Beta"
+                  : trackingHealth === "error"
+                    ? "Unavailable"
+                    : trackingHealth === "checking"
+                      ? "Checking"
+                      : "Coming soon"}
               </span>
             </div>
             <p className="sb-muted">
-              {preferences.lastApiHealthCheckAt
-                ? `Last checked ${formatTimestamp(preferences.lastApiHealthCheckAt)}.`
-                : "Check the configured tracking API before testing read receipts."}
+              {trackingBetaEnabled
+                ? "Read statuses run on a fixed Superbhuman-hosted beta backend and are not part of the core launch path."
+                : "Read statuses are not included in this build. Core Gmail features remain fully usable without any backend."}
             </p>
-            {apiUrlError ? <p className="sb-muted">{apiUrlError}</p> : null}
-          </section>
-
-          <section className="sb-status-card">
-            <div className="sb-read-status-row">
-              <strong>Tracking Reachability</strong>
-              <span
-                className={`sb-status-pill ${
-                  apiIsPublicHttps && trackingPermissionGranted
-                    ? ""
-                    : apiIsLocal
-                      ? "is-warning"
-                      : apiNeedsPermission
-                        ? "is-danger"
-                        : normalizedApiBaseUrl
-                          ? "is-danger"
-                          : "is-neutral"
-                }`}
-              >
-                {apiIsPublicHttps && trackingPermissionGranted
-                  ? "Public HTTPS"
-                  : apiIsLocal
-                    ? "Local only"
-                    : apiNeedsPermission
-                      ? "Permission required"
-                      : normalizedApiBaseUrl
-                        ? "Unsupported"
-                        : "Invalid"}
-              </span>
-            </div>
-            <p className="sb-muted">
-              {apiIsPublicHttps && trackingPermissionGranted
-                ? "Recipient opens can be recorded from Gmail's image proxy."
-                : apiIsLocal
-                  ? "Local URLs can prove the API is alive, but they cannot record real remote opens."
-                  : apiNeedsPermission
-                    ? "Save or check this URL and approve the Chrome permission request before using read statuses."
-                    : normalizedApiBaseUrl
-                      ? "Non-local tracking URLs must use HTTPS."
-                      : "Enter a valid http:// or https:// URL."}
-            </p>
-            {preferences.approvedTrackingOrigin ? (
-              <p className="sb-muted">Approved origin: {preferences.approvedTrackingOrigin}</p>
+            <p className="sb-muted">{trackingHealthMessage}</p>
+            {trackingBetaEnabled && trackingApiOrigin ? (
+              <p className="sb-muted">
+                Beta backend origin: <code className="sb-diagnostics-value">{trackingApiOrigin}</code>
+              </p>
+            ) : null}
+            {trackingBetaEnabled ? (
+              <div className="sb-diagnostics-actions">
+                <button className="sb-button sb-button-secondary" type="button" onClick={() => void refreshTrackingHealth()}>
+                  {checkingTracking ? "Checking..." : "Check beta backend"}
+                </button>
+              </div>
             ) : null}
           </section>
 
@@ -377,10 +282,7 @@ export function OptionsApp() {
                 {authDiagnostics?.lastError ? "Error" : authDiagnostics?.lastStage ? "Tracing" : "Idle"}
               </span>
             </div>
-            <p className="sb-muted">
-              These values come from the extension background worker and should tell us whether the click reached
-              Chrome's OAuth flow.
-            </p>
+            <p className="sb-muted">These values come from the extension background worker and help debug Gmail auth issues.</p>
             <p className="sb-muted">
               Extension ID: <code className="sb-diagnostics-value">{authDiagnostics?.extensionId ?? chrome.runtime.id}</code>
             </p>
@@ -423,25 +325,27 @@ export function OptionsApp() {
           </section>
         </div>
 
-        <div className="sb-field">
-          <label>
-            <input
-              type="checkbox"
-              checked={preferences.trackingEnabledByDefault}
-              onChange={(event) =>
-                setPreferences((current) =>
-                  current
-                    ? {
-                        ...current,
-                        trackingEnabledByDefault: event.target.checked
-                      }
-                    : current
-                )
-              }
-            />{" "}
-            Enable read statuses by default
-          </label>
-        </div>
+        {trackingBetaEnabled ? (
+          <div className="sb-field">
+            <label>
+              <input
+                type="checkbox"
+                checked={preferences.trackingEnabledByDefault}
+                onChange={(event) =>
+                  setPreferences((current) =>
+                    current
+                      ? {
+                          ...current,
+                          trackingEnabledByDefault: event.target.checked
+                        }
+                      : current
+                  )
+                }
+              />{" "}
+              Enable read statuses by default in beta builds
+            </label>
+          </div>
+        ) : null}
 
         <div className="sb-field">
           <label>
@@ -503,38 +407,9 @@ export function OptionsApp() {
           </label>
         </div>
 
-        <div className="sb-field">
-          <strong>API base URL</strong>
-          <input
-            type="text"
-            value={preferences.apiBaseUrl}
-            onChange={(event) =>
-              setPreferences((current) =>
-                current
-                  ? {
-                      ...current,
-                      apiBaseUrl: event.target.value
-                    }
-                  : current
-              )
-            }
-          />
-          <p className="sb-muted">
-            Use `http://127.0.0.1:8787` for local health checks. Use a public HTTPS URL for real read receipts.
-          </p>
-          {apiIsLocal ? (
-            <p className="sb-muted">
-              `localhost`, `127.0.0.1`, and `0.0.0.0` are local-only. Gmail's image proxy cannot call back into your laptop.
-            </p>
-          ) : null}
-        </div>
-
         <div className="sb-button-row">
           <button className="sb-button sb-button-primary" type="button" onClick={() => void save()} disabled={saving}>
             {saving ? "Saving..." : "Save preferences"}
-          </button>
-          <button className="sb-button sb-button-secondary" type="button" onClick={() => void checkApi()} disabled={checkingApi}>
-            {checkingApi ? "Checking..." : "Check API"}
           </button>
           {status ? <span className="sb-muted">{status}</span> : null}
         </div>

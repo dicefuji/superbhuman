@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
-  readonly WXT_PUBLIC_API_BASE_URL?: string;
+  readonly WXT_PUBLIC_TRACKING_API_BASE_URL?: string;
+  readonly WXT_PUBLIC_ENABLE_TRACKING_BETA?: string;
 }
 
 interface ImportMeta {

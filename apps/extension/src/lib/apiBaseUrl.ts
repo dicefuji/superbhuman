@@ -1,12 +1,10 @@
-import { DEFAULT_PREFERENCES, type UserPreferences } from "@superbhuman/shared";
-
-import { API_BASE_URL } from "../env";
+import { TRACKING_API_BASE_URL, TRACKING_BETA_ENABLED } from "../env";
 
 export function normalizeApiBaseUrl(value?: string): string {
-  const rawValue = (value ?? DEFAULT_PREFERENCES.apiBaseUrl ?? API_BASE_URL).trim();
+  const rawValue = value?.trim();
 
   if (!rawValue) {
-    throw new Error("Tracking API URL is required.");
+    throw new Error("Read statuses beta is not configured for this build.");
   }
 
   let url: URL;
@@ -23,8 +21,12 @@ export function normalizeApiBaseUrl(value?: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-export function resolveApiBaseUrl(preferences?: Pick<UserPreferences, "apiBaseUrl">): string {
-  return assertSupportedTrackingApiBaseUrl(preferences?.apiBaseUrl || API_BASE_URL);
+export function isTrackingBetaBuild(): boolean {
+  return TRACKING_BETA_ENABLED;
+}
+
+export function resolveApiBaseUrl(): string {
+  return assertSupportedTrackingApiBaseUrl(TRACKING_API_BASE_URL);
 }
 
 export function isLocalApiBaseUrl(value: string): boolean {

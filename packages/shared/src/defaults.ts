@@ -28,7 +28,6 @@ export const DEFAULT_SPLIT_RULES: SplitRule[] = [
 ];
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
-  apiBaseUrl: "http://127.0.0.1:8787",
   commandCenterShortcut: DEFAULT_COMMAND_CENTER_SHORTCUT,
   trackingEnabledByDefault: true,
   splitOverrides: [],

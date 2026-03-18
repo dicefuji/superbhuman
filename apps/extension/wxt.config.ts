@@ -2,11 +2,14 @@ import { defineConfig } from "wxt";
 
 const googleClientId = process.env.WXT_GOOGLE_OAUTH_CLIENT_ID?.trim();
 const extensionKey = process.env.WXT_EXTENSION_KEY?.trim();
+const trackingApiBaseUrl = process.env.WXT_PUBLIC_TRACKING_API_BASE_URL?.trim();
+const trackingBetaEnabled = process.env.WXT_PUBLIC_ENABLE_TRACKING_BETA === "true" && Boolean(trackingApiBaseUrl);
 const oauthScopes = [
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.settings.basic",
   "https://www.googleapis.com/auth/userinfo.email"
 ];
+const trackingHostPermission = trackingBetaEnabled && trackingApiBaseUrl ? `${new URL(trackingApiBaseUrl).origin}/*` : undefined;
 
 export default defineConfig({
   srcDir: ".",
@@ -19,10 +22,8 @@ export default defineConfig({
       "https://mail.google.com/*",
       "https://gmail.googleapis.com/*",
       "https://www.googleapis.com/*",
-      "http://localhost:8787/*",
-      "http://127.0.0.1:8787/*"
+      ...(trackingHostPermission ? [trackingHostPermission] : [])
     ],
-    optional_host_permissions: ["https://*/*"],
     ...(googleClientId
       ? {
           oauth2: {

@@ -1,6 +1,7 @@
 import {
   DEFAULT_PREFERENCES,
   type ApiSession,
+  type CommandDefinition,
   type CommandContext,
   type GmailRouteState,
   type Platform,
@@ -12,7 +13,7 @@ import {
 import { startTransition, useEffect, useRef, useState } from "react";
 
 import { getPlatform } from "../env";
-import { isLocalApiBaseUrl } from "../lib/apiBaseUrl";
+import { isTrackingBetaBuild } from "../lib/apiBaseUrl";
 import { getApiSession, fetchTrackingStatus, gmailBatchDelete, gmailCreateFilter, gmailListMessages } from "../lib/gmailApi";
 import { hasRequiredGoogleScopes } from "../lib/googleAuth";
 import { loadPreferences, loadTrackedMessages, savePreferences, updatePreferences, upsertTrackedMessage } from "../lib/storage";
@@ -44,6 +45,7 @@ const INITIAL_ROUTE: GmailRouteState = {
 
 export function Shell() {
   const platform = useRef<Platform>(getPlatform()).current;
+  const trackingBetaEnabled = useRef<boolean>(isTrackingBetaBuild()).current;
   const adapterRef = useRef<GmailDomAdapter | null>(null);
   const trackingRef = useRef<ComposeTrackingController | null>(null);
   const preferencesRef = useRef<UserPreferences>(DEFAULT_PREFERENCES);
@@ -76,7 +78,9 @@ export function Shell() {
   const [readStatusOpen, setReadStatusOpen] = useState(false);
   const [readStatusRefreshing, setReadStatusRefreshing] = useState(false);
 
-  const commands = searchCommands(commandQuery);
+  const commands = searchCommands(commandQuery).filter((command: CommandDefinition) =>
+    trackingBetaEnabled ? true : command.id !== "toggle-tracking"
+  );
 
   const pushToast = (message: string) => {
     const id = crypto.randomUUID();
@@ -114,7 +118,7 @@ export function Shell() {
       setSplitCounts(nextSplitCounts);
     });
 
-    if (trackingRef.current && nextRoute.route === "thread") {
+    if (trackingBetaEnabled && trackingRef.current && nextRoute.route === "thread") {
       void trackingRef.current.resolveCurrentThreadStatus().then(setThreadStatus).catch(() => setThreadStatus(undefined));
     } else {
       setThreadStatus(undefined);
@@ -147,34 +151,33 @@ export function Shell() {
 
     const unsubscribe = adapter.subscribe(() => syncDomStateRef.current());
 
-    const tracking = new ComposeTrackingController(adapter, preferencesRef.current, {
-      onRegistered: (record, apiBaseUrl) => {
-        setReadStatusOpen(true);
-        pushToast(
-          isLocalApiBaseUrl(apiBaseUrl)
-            ? `Read status armed for ${record.subject || "your email"}, but ${apiBaseUrl} is local-only. Use a public API URL for real opens.`
-            : `Read status armed for ${record.subject || "your email"}. Open the Read Statuses panel to track opens.`
-        );
-        void upsertTrackedMessage(record).then(setTrackedMessages);
-      },
-      onRegistrationFailed: (record) => {
-        setReadStatusOpen(true);
-        void upsertTrackedMessage(record).then(setTrackedMessages);
-      },
-      onError: (message) => {
-        pushToast(message);
-      }
-    });
-    tracking.start();
-    trackingRef.current = tracking;
+    if (trackingBetaEnabled) {
+      const tracking = new ComposeTrackingController(adapter, preferencesRef.current, {
+        onRegistered: (record) => {
+          setReadStatusOpen(true);
+          pushToast(`Read status armed for ${record.subject || "your email"}. Open the Read Statuses panel to track opens.`);
+          void upsertTrackedMessage(record).then(setTrackedMessages);
+        },
+        onRegistrationFailed: (record) => {
+          setReadStatusOpen(true);
+          void upsertTrackedMessage(record).then(setTrackedMessages);
+        },
+        onError: (message) => {
+          pushToast(message);
+        }
+      });
+      tracking.start();
+      trackingRef.current = tracking;
+    }
     syncDomStateRef.current();
 
     return () => {
       unsubscribe();
-      tracking.stop();
+      trackingRef.current?.stop();
+      trackingRef.current = null;
       adapter.stop();
     };
-  }, []);
+  }, [trackingBetaEnabled]);
 
   useEffect(() => {
     const handler = () => {
@@ -188,9 +191,11 @@ export function Shell() {
 
   useEffect(() => {
     preferencesRef.current = preferences;
-    trackingRef.current?.setPreferences(preferences);
+    if (trackingBetaEnabled) {
+      trackingRef.current?.setPreferences(preferences);
+    }
     syncDomStateRef.current();
-  }, [preferences]);
+  }, [preferences, trackingBetaEnabled]);
 
   useEffect(() => {
     trackedMessagesRef.current = trackedMessages;
@@ -203,7 +208,7 @@ export function Shell() {
   }, [splitMode]);
 
   useEffect(() => {
-    if (!trackedMessages.length) {
+    if (!trackingBetaEnabled || !trackedMessages.length) {
       return;
     }
 
@@ -214,7 +219,7 @@ export function Shell() {
     }, 30000);
 
     return () => window.clearInterval(intervalId);
-  }, [trackedMessages.length]);
+  }, [trackedMessages.length, trackingBetaEnabled]);
 
   useEffect(() => {
     return mountKeyboardController({
@@ -293,7 +298,13 @@ export function Shell() {
             adapter.switchFolder(destination);
           }
         },
-        toggleTracking: () => Promise.resolve(trackingRef.current?.toggleActiveCompose()),
+        toggleTracking: () => {
+          if (!trackingBetaEnabled) {
+            return Promise.reject(new Error("Read statuses are not available in this build."));
+          }
+
+          return Promise.resolve(trackingRef.current?.toggleActiveCompose());
+        },
         showToast: pushToast,
         moveThreadToSplit: async (target) => {
           if (!selectedThread) {
@@ -431,6 +442,10 @@ export function Shell() {
   }
 
   async function refreshTrackedMessages() {
+    if (!trackingBetaEnabled) {
+      return;
+    }
+
     const currentMessages = trackedMessagesRef.current;
     if (!currentMessages.length) {
       return;
@@ -490,6 +505,7 @@ export function Shell() {
         visibleCount={visibleCount}
         importantCount={splitCounts.important}
         otherCount={splitCounts.other}
+        showReadStatuses={trackingBetaEnabled}
         trackedCount={trackedMessages.length}
         openedCount={trackedMessages.filter((message) => message.openCount > 0).length}
         onModeChange={(mode) => {
@@ -497,6 +513,10 @@ export function Shell() {
           void updatePreferences((current) => ({ ...current, preferredSplitMode: mode })).then(setPreferences);
         }}
         onOpenReadStatuses={() => {
+          if (!trackingBetaEnabled) {
+            return;
+          }
+
           setReadStatusOpen(true);
           void refreshTrackedMessages();
         }}
@@ -530,14 +550,16 @@ export function Shell() {
         onClose={() => setArchiveOpen(false)}
       />
 
-      <ThreadStatusCard status={threadStatus} />
-      <ReadStatusPanel
-        open={readStatusOpen}
-        items={trackedMessages}
-        refreshing={readStatusRefreshing}
-        onRefresh={() => void refreshTrackedMessages()}
-        onClose={() => setReadStatusOpen(false)}
-      />
+      {trackingBetaEnabled ? <ThreadStatusCard status={threadStatus} /> : null}
+      {trackingBetaEnabled ? (
+        <ReadStatusPanel
+          open={readStatusOpen}
+          items={trackedMessages}
+          refreshing={readStatusRefreshing}
+          onRefresh={() => void refreshTrackedMessages()}
+          onClose={() => setReadStatusOpen(false)}
+        />
+      ) : null}
       <SplitEmptyState visible={route.route === "inbox" && visibleCount === 0 && (splitCounts.important + splitCounts.other) > 0} mode={splitMode} />
       <ToastStack toasts={toasts} />
 

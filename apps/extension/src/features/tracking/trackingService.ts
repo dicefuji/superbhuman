@@ -161,7 +161,7 @@ export class ComposeTrackingController {
 
     let apiBaseUrl: string;
     try {
-      apiBaseUrl = resolveApiBaseUrl(this.preferences);
+      apiBaseUrl = resolveApiBaseUrl();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Read status registration failed.";
       const failedRecord = createRecord("failed", message);
