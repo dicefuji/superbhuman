@@ -2,6 +2,7 @@ import {
   buildTrackingPixelUrl,
   injectTrackingPixel,
   mergeTrackerStatus,
+  type TrackingRegistrationStatus,
   type TrackedMessageRecord,
   type TrackerStatus,
   type UserPreferences
@@ -20,6 +21,7 @@ interface ComposeState {
 
 interface ComposeTrackingCallbacks {
   onRegistered?(record: TrackedMessageRecord, apiBaseUrl: string): void;
+  onRegistrationFailed?(record: TrackedMessageRecord, apiBaseUrl: string, message: string): void;
   onError?(message: string): void;
 }
 
@@ -143,29 +145,49 @@ export class ComposeTrackingController {
     }
 
     state.token = crypto.randomUUID();
-    const apiBaseUrl = resolveApiBaseUrl(this.preferences);
+    const recipientEmails = this.adapter.getComposeRecipients(compose);
+    const sentAt = new Date().toISOString();
+    const subject = compose.querySelector<HTMLInputElement>('input[name="subjectbox"]')?.value ?? undefined;
+
+    const createRecord = (registrationStatus: TrackingRegistrationStatus, registrationError?: string): TrackedMessageRecord => ({
+      token: state.token!,
+      recipientEmails,
+      sentAt,
+      subject,
+      openCount: 0,
+      registrationStatus,
+      registrationError
+    });
+
+    let apiBaseUrl: string;
+    try {
+      apiBaseUrl = resolveApiBaseUrl(this.preferences);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Read status registration failed.";
+      const failedRecord = createRecord("failed", message);
+      this.callbacks.onRegistrationFailed?.(failedRecord, "", message);
+      this.callbacks.onError?.(message);
+      return;
+    }
+
     const pixelUrl = buildTrackingPixelUrl(apiBaseUrl, state.token);
     body.innerHTML = injectTrackingPixel(body.innerHTML, pixelUrl, state.token);
 
-    const record: TrackedMessageRecord = {
-      token: state.token,
-      recipientEmails: this.adapter.getComposeRecipients(compose),
-      sentAt: new Date().toISOString(),
-      subject: compose.querySelector<HTMLInputElement>('input[name="subjectbox"]')?.value ?? undefined,
-      openCount: 0
-    };
-
     await registerTracking({
-      token: record.token,
-      recipientEmails: record.recipientEmails,
-      sentAt: record.sentAt,
-      subject: record.subject
+      token: state.token,
+      recipientEmails,
+      sentAt,
+      subject
     })
-      .then(() => this.callbacks.onRegistered?.(record, apiBaseUrl))
-      .catch((error) =>
-        this.callbacks.onError?.(
-          error instanceof Error ? error.message : "Read status registration failed."
-        )
-      );
+      .then(() => {
+        const record = createRecord("registered");
+        this.callbacks.onRegistered?.(record, apiBaseUrl);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "Read status registration failed.";
+        const failedRecord = createRecord("failed", message);
+        this.callbacks.onRegistrationFailed?.(failedRecord, apiBaseUrl, message);
+        this.callbacks.onError?.(message);
+      });
   }
 }

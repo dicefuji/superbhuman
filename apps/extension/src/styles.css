@@ -325,6 +325,21 @@
   letter-spacing: 0.08em;
 }
 
+.sb-status-pill.is-neutral {
+  background: rgba(36, 25, 14, 0.08);
+  color: var(--sb-text);
+}
+
+.sb-status-pill.is-warning {
+  background: rgba(255, 107, 26, 0.12);
+  color: var(--sb-accent);
+}
+
+.sb-status-pill.is-danger {
+  background: rgba(193, 54, 54, 0.12);
+  color: #a83434;
+}
+
 .sb-toast-stack {
   position: fixed;
   right: 24px;
@@ -366,6 +381,24 @@
   margin-top: 18px;
 }
 
+.sb-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.sb-status-card {
+  border: 1px solid var(--sb-line);
+  border-radius: 20px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.sb-status-card-wide {
+  grid-column: 1 / -1;
+}
+
 .sb-field input[type="text"] {
   padding: 12px 14px;
   border-radius: 14px;
@@ -376,6 +409,19 @@
 
 .sb-muted {
   color: var(--sb-muted);
+}
+
+.sb-diagnostics-value {
+  display: inline-block;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sb-diagnostics-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .sb-hidden-row {
@@ -418,6 +464,10 @@ tr[data-superbhuman-split="other"] td:first-child {
     right: 16px;
     transform: none;
     justify-content: space-between;
+  }
+
+  .sb-status-grid {
+    grid-template-columns: 1fr;
   }
 
   .sb-command-center,

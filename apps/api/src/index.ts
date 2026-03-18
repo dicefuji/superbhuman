@@ -78,8 +78,8 @@ async function main() {
       }
 
       if (request.method === "POST" && url.pathname === "/session/google") {
-        const body = await readJson<{ accessToken: string; email?: string }>(request);
-        sendJson(response, 200, createSession(body.email, body.accessToken));
+        const body = await readJson<{ accessToken: string; email?: string; grantedScopes?: string[] }>(request);
+        sendJson(response, 200, createSession(body.email, body.accessToken, body.grantedScopes));
         return;
       }
 

@@ -1,5 +1,6 @@
 import {
   DEFAULT_PREFERENCES,
+  type ApiSession,
   type CommandContext,
   type GmailRouteState,
   type Platform,
@@ -12,7 +13,8 @@ import { startTransition, useEffect, useRef, useState } from "react";
 
 import { getPlatform } from "../env";
 import { isLocalApiBaseUrl } from "../lib/apiBaseUrl";
-import { fetchTrackingStatus, gmailBatchDelete, gmailCreateFilter, gmailListMessages } from "../lib/gmailApi";
+import { getApiSession, fetchTrackingStatus, gmailBatchDelete, gmailCreateFilter, gmailListMessages } from "../lib/gmailApi";
+import { hasRequiredGoogleScopes } from "../lib/googleAuth";
 import { loadPreferences, loadTrackedMessages, savePreferences, updatePreferences, upsertTrackedMessage } from "../lib/storage";
 import { previewMassArchive, runMassArchive, type ArchivePreviewOptions } from "../features/archive/archiveService";
 import { executeCommand, searchCommands } from "../features/command/commandRegistry";
@@ -49,6 +51,8 @@ export function Shell() {
   const trackedMessagesRef = useRef<TrackedMessageRecord[]>([]);
 
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_PREFERENCES);
+  const [session, setSession] = useState<ApiSession | null>(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
   const [route, setRoute] = useState<GmailRouteState>(INITIAL_ROUTE);
   const [selectedThread, setSelectedThread] = useState<ThreadRowSnapshot | undefined>();
   const [visibleCount, setVisibleCount] = useState(0);
@@ -118,10 +122,12 @@ export function Shell() {
   };
 
   useEffect(() => {
-    void Promise.all([loadPreferences(), loadTrackedMessages()]).then(([loaded, tracked]) => {
+    void Promise.all([loadPreferences(), loadTrackedMessages(), getApiSession().catch(() => null)]).then(([loaded, tracked, apiSession]) => {
       preferencesRef.current = loaded;
       splitModeRef.current = loaded.preferredSplitMode;
       setPreferences(loaded);
+      setSession(apiSession);
+      setAuthLoaded(true);
       setSplitModeState(loaded.preferredSplitMode);
       setArchiveOptions((current) => ({
         ...current,
@@ -151,8 +157,12 @@ export function Shell() {
         );
         void upsertTrackedMessage(record).then(setTrackedMessages);
       },
+      onRegistrationFailed: (record) => {
+        setReadStatusOpen(true);
+        void upsertTrackedMessage(record).then(setTrackedMessages);
+      },
       onError: (message) => {
-        pushToast(`${message} Check the API URL in settings and make sure the tracking server is running.`);
+        pushToast(message);
       }
     });
     tracking.start();
@@ -222,102 +232,118 @@ export function Shell() {
     await savePreferences(next);
   }
 
+  function assertGmailApiReady(actionDescription: string) {
+    if (!authLoaded || !session) {
+      throw new Error(`Connect Gmail in Superbhuman settings before trying to ${actionDescription}.`);
+    }
+
+    if (!hasRequiredGoogleScopes(session)) {
+      throw new Error(
+        `Reconnect Gmail in Superbhuman settings and approve the required Gmail scopes before trying to ${actionDescription}.`
+      );
+    }
+  }
+
   async function runCommand(id: Parameters<typeof executeCommand>[0]) {
     const adapter = adapterRef.current;
     if (!adapter) {
       return;
     }
 
-    await executeCommand(id, {
-      getContext: (): CommandContext => ({
-        route,
-        selectedThread,
-        selectionCount: selectedThread ? 1 : 0,
-        splitMode,
-        hasCompose: adapter.getComposeWindows().length > 0,
-        platform
-      }),
-      openCommandCenter: () => {
-        setCommandQuery("");
-        setCommandOpen(true);
-      },
-      closeOverlays: () => {
-        if (commandOpen) {
-          setCommandOpen(false);
-          return true;
-        }
+    try {
+      await executeCommand(id, {
+        getContext: (): CommandContext => ({
+          route,
+          selectedThread,
+          selectionCount: selectedThread ? 1 : 0,
+          splitMode,
+          hasCompose: adapter.getComposeWindows().length > 0,
+          platform
+        }),
+        openCommandCenter: () => {
+          setCommandQuery("");
+          setCommandOpen(true);
+        },
+        closeOverlays: () => {
+          if (commandOpen) {
+            setCommandOpen(false);
+            return true;
+          }
 
-        if (archiveOpen) {
-          setArchiveOpen(false);
-          return true;
-        }
+          if (archiveOpen) {
+            setArchiveOpen(false);
+            return true;
+          }
 
-        if (readStatusOpen) {
-          setReadStatusOpen(false);
-          return true;
-        }
+          if (readStatusOpen) {
+            setReadStatusOpen(false);
+            return true;
+          }
 
-        return false;
-      },
-      openMassArchive: () => setArchiveOpen(true),
-      setSplitMode: (mode) => {
-        setSplitModeState(mode);
-        void updatePreferences((current) => ({ ...current, preferredSplitMode: mode })).then(setPreferences);
-      },
-      promptForFolder: () => {
-        const destination = window.prompt("Folder, label, or Gmail search", route.searchQuery ?? "");
-        if (destination) {
-          adapter.switchFolder(destination);
-        }
-      },
-      toggleTracking: () => Promise.resolve(trackingRef.current?.toggleActiveCompose()),
-      showToast: pushToast,
-      moveThreadToSplit: async (target) => {
-        if (!selectedThread) {
-          pushToast("No thread selected.");
-          return;
-        }
+          return false;
+        },
+        openMassArchive: () => setArchiveOpen(true),
+        setSplitMode: (mode) => {
+          setSplitModeState(mode);
+          void updatePreferences((current) => ({ ...current, preferredSplitMode: mode })).then(setPreferences);
+        },
+        promptForFolder: () => {
+          const destination = window.prompt("Folder, label, or Gmail search", route.searchQuery ?? "");
+          if (destination) {
+            adapter.switchFolder(destination);
+          }
+        },
+        toggleTracking: () => Promise.resolve(trackingRef.current?.toggleActiveCompose()),
+        showToast: pushToast,
+        moveThreadToSplit: async (target) => {
+          if (!selectedThread) {
+            pushToast("No thread selected.");
+            return;
+          }
 
-        const override = buildOverrideForThread(selectedThread, target);
-        if (!override) {
-          pushToast("Could not infer a sender or domain.");
-          return;
-        }
+          const override = buildOverrideForThread(selectedThread, target);
+          if (!override) {
+            pushToast("Could not infer a sender or domain.");
+            return;
+          }
 
-        const next = await updatePreferences((current) => ({
-          ...current,
-          splitOverrides: current.splitOverrides
-            .filter((entry) => entry.sender !== override.sender && entry.domain !== override.domain)
-            .concat(override)
-        }));
-        setPreferences(next);
-        pushToast(target === "important" ? "Promoted sender into Important." : "Moved sender into Other.");
-      },
-      nukeSender: async () => {
-        const sender = selectedThread?.senderEmail;
-        if (!sender) {
-          pushToast("No sender email found.");
-          return;
-        }
+          const next = await updatePreferences((current) => ({
+            ...current,
+            splitOverrides: current.splitOverrides
+              .filter((entry) => entry.sender !== override.sender && entry.domain !== override.domain)
+              .concat(override)
+          }));
+          setPreferences(next);
+          pushToast(target === "important" ? "Promoted sender into Important." : "Moved sender into Other.");
+        },
+        nukeSender: async () => {
+          const sender = selectedThread?.senderEmail;
+          if (!sender) {
+            pushToast("No sender email found.");
+            return;
+          }
 
-        await nukeByQuery(`from:${sender}`, { from: sender }, `Nuked ${sender}.`);
-      },
-      nukeCompany: async () => {
-        const domain = selectedThread?.senderEmail?.split("@")[1];
-        if (!domain) {
-          pushToast("No sender domain found.");
-          return;
-        }
+          await nukeByQuery(`from:${sender}`, { from: sender }, `Nuked ${sender}.`);
+        },
+        nukeCompany: async () => {
+          const domain = selectedThread?.senderEmail?.split("@")[1];
+          if (!domain) {
+            pushToast("No sender domain found.");
+            return;
+          }
 
-        await nukeByQuery(`from:(*@${domain})`, { from: `*@${domain}` }, `Nuked ${domain}.`);
-      },
-      adapter
-    });
-
-    setCommandOpen(false);
+          await nukeByQuery(`from:(*@${domain})`, { from: `*@${domain}` }, `Nuked ${domain}.`);
+        },
+        adapter
+      });
+      setCommandOpen(false);
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Command failed.");
+    }
   }
 
   async function nukeByQuery(query: string, criteria: Record<string, string>, successMessage: string) {
+    assertGmailApiReady("nuke emails");
     const messageIds = await listAllMessageIds(query);
     if (messageIds.length) {
       await gmailBatchDelete(messageIds);
@@ -351,6 +377,7 @@ export function Shell() {
   async function handleArchivePreview(nextOptions = archiveOptions) {
     setArchiveLoading(true);
     try {
+      assertGmailApiReady("preview Get Me To Zero");
       const preview = await previewMassArchive(nextOptions);
       setArchivePreviewState(preview);
     } catch (error) {
@@ -367,6 +394,7 @@ export function Shell() {
 
     setArchiveLoading(true);
     try {
+      assertGmailApiReady("run Get Me To Zero");
       const result = await runMassArchive(archivePreviewState);
       pushToast(result.archivedCount ? `Archived ${result.archivedCount} messages.` : "Nothing matched your archive query.");
       setArchiveOpen(false);
@@ -412,13 +440,25 @@ export function Shell() {
     try {
       const refreshed = await Promise.all(
         currentMessages.map(async (message) => {
-          const status = await fetchTrackingStatus(message.token).catch(() => undefined);
-          const next = status
-            ? {
-                ...message,
-                ...status
-              }
-            : message;
+          const checkedAt = new Date().toISOString();
+          let next: TrackedMessageRecord;
+
+          try {
+            const status = await fetchTrackingStatus(message.token);
+            next = {
+              ...message,
+              ...status,
+              lastStatusCheckedAt: checkedAt,
+              lastStatusError: undefined
+            };
+          } catch (error) {
+            next = {
+              ...message,
+              lastStatusCheckedAt: checkedAt,
+              lastStatusError: error instanceof Error ? error.message : "Could not refresh read status."
+            };
+          }
+
           await upsertTrackedMessage(next);
           return next;
         })

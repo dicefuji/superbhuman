@@ -6,6 +6,12 @@ export const DEFAULT_COMMAND_CENTER_SHORTCUT = {
   linux: "Ctrl+Shift+K"
 } as const;
 
+export const GOOGLE_OAUTH_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/gmail.settings.basic",
+  "https://www.googleapis.com/auth/userinfo.email"
+] as const;
+
 export const DEFAULT_SPLIT_RULES: SplitRule[] = [
   {
     id: "important",

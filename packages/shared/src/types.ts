@@ -81,10 +81,16 @@ export interface TrackerStatus {
   openCount: number;
 }
 
+export type TrackingRegistrationStatus = "registered" | "failed";
+
 export interface TrackedMessageRecord extends TrackerStatus {
   subject?: string;
   recipientEmails: string[];
   sentAt: string;
+  registrationStatus: TrackingRegistrationStatus;
+  registrationError?: string;
+  lastStatusCheckedAt?: string;
+  lastStatusError?: string;
 }
 
 export interface ComposeTrackingState {
@@ -147,6 +153,9 @@ export interface CommandDefinition {
 
 export interface UserPreferences {
   apiBaseUrl: string;
+  approvedTrackingOrigin?: string;
+  lastApiHealthCheckAt?: string;
+  lastApiHealthStatus?: "ok" | "error";
   commandCenterShortcut: KeyboardShortcut;
   trackingEnabledByDefault: boolean;
   splitOverrides: SplitOverride[];
@@ -162,10 +171,25 @@ export interface ApiSession {
   email?: string;
   accessToken: string;
   expiresAt: string;
+  grantedScopes?: string[];
+  connectedAt?: string;
+}
+
+export interface AuthDiagnostics {
+  extensionId: string;
+  clientId?: string;
+  hasOAuthClient: boolean;
+  requestedScopes: string[];
+  sessionEmail?: string;
+  lastStage?: string;
+  lastError?: string;
+  lastRawError?: string;
+  updatedAt?: string;
 }
 
 export type ExtensionMessage =
   | { type: "auth:get-session" }
+  | { type: "auth:get-diagnostics" }
   | { type: "auth:interactive-login" }
   | { type: "gmail:api"; path: string; method?: string; body?: unknown }
   | { type: "tracking:health"; apiBaseUrl?: string }

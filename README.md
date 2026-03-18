@@ -27,7 +27,7 @@ Working now:
 
 Partially implemented or still constrained:
 
-- Gmail API-backed actions need a real Google OAuth setup to be fully usable end to end
+- Gmail API-backed actions only work after you configure a real Chrome Extension OAuth client and connect Gmail from settings
 - local `127.0.0.1` tracking can prove the API is alive, but it cannot produce real remote read receipts
 - real read receipts require a public HTTPS API URL because Gmail’s image proxy fetches images from Google’s servers, not from your laptop
 
@@ -90,9 +90,106 @@ If the file picker hides `.output`, use `Cmd + Shift + .` on macOS to show hidde
 
 - set the API base URL to `http://127.0.0.1:8787` for local testing
 - click `Check API`
-- optionally connect Gmail with Google auth
+- if you have not configured Google OAuth yet, `Connect Gmail` will stay unavailable
 
 8. Refresh Gmail after saving settings or reloading the extension.
+
+## Private Real Integration Setup
+
+Use this path when you want real Gmail API actions and real read receipts, but only for a private test group.
+
+### 1. Prepare a stable extension ID
+
+Superbhuman now reads two build-time environment variables from the extension build:
+
+- `WXT_EXTENSION_KEY`
+- `WXT_GOOGLE_OAUTH_CLIENT_ID`
+
+Set a stable `WXT_EXTENSION_KEY` first, then build the extension once. The extension ID generated from that key is the ID you will use when creating the Chrome Extension OAuth client.
+
+Example:
+
+```bash
+export WXT_EXTENSION_KEY='YOUR_EXTENSION_PUBLIC_KEY'
+pnpm --filter @superbhuman/extension build
+```
+
+Then load the unpacked extension and copy the extension ID from `chrome://extensions`.
+
+### 2. Configure Google Auth Platform
+
+In Google Cloud:
+
+1. Create or choose a project.
+2. Enable the Gmail API.
+3. Configure Google Auth Platform branding.
+4. Set Audience to `External`.
+5. Add your own account and any teammates as `Test users`.
+6. Add only these Gmail scopes:
+   - `https://www.googleapis.com/auth/gmail.modify`
+   - `https://www.googleapis.com/auth/gmail.settings.basic`
+   - `https://www.googleapis.com/auth/userinfo.email`
+7. Create an OAuth client of type `Chrome Extension`.
+8. Paste the stable extension ID from the previous step.
+
+Then export the client ID and rebuild:
+
+```bash
+export WXT_EXTENSION_KEY='YOUR_EXTENSION_PUBLIC_KEY'
+export WXT_GOOGLE_OAUTH_CLIENT_ID='YOUR_CLIENT_ID.apps.googleusercontent.com'
+pnpm --filter @superbhuman/extension build
+```
+
+Reload the unpacked extension after every rebuild.
+
+### 3. Bring up the tracking API
+
+Local API for development:
+
+```bash
+pnpm --filter @superbhuman/api start
+curl http://127.0.0.1:8787/healthz
+```
+
+Expected response:
+
+```json
+{"ok":true}
+```
+
+For real recipient opens, expose that API over public HTTPS with any temporary tunnel or deployment that forwards to the API process.
+
+Example shape:
+
+- `https://your-public-tracking-host.example.com`
+
+For a quick local-to-public tunnel on macOS:
+
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+Then put that public HTTPS URL into the extension settings and click `Check API`.
+
+### 4. Connect Gmail and verify
+
+In the extension settings page:
+
+1. Confirm `Gmail Auth` says `Ready`.
+2. Confirm `Tracking API` says `Reachable`.
+3. Confirm `Tracking Reachability` says `Public HTTPS` if you want real read receipts.
+4. Click `Connect Gmail`.
+5. Approve the Gmail scopes with a configured test user account.
+
+After that:
+
+- `Get Me To Zero` preview/run should work
+- sender/company nuke should work
+- tracked emails should register in the `Read Statuses` panel
+- recipient opens should increment `openCount` if the API URL is public HTTPS
+
+If the tracking API is offline during `Connect Gmail`, the extension now keeps a local Gmail session fallback so Gmail auth can still become `Ready`. Read receipts remain unavailable until the tracking API is reachable again.
 
 ## Everyday Testing
 
@@ -126,14 +223,21 @@ Local API mode is useful for confirming:
 
 Local API mode is not enough for real recipient opens from Gmail or other mail clients. For real read receipts, the API URL must be publicly reachable over HTTPS.
 
+Why:
+
+- the extension can call `127.0.0.1` from your browser
+- the recipient’s mail client cannot
+- Gmail usually proxies images through Google’s servers, so the tracking pixel must be reachable from the public internet
+
 ## Public Read Receipts
 
 To get actual opens recorded:
 
-1. deploy the API somewhere public
+1. run or deploy the API somewhere public
 2. expose it over HTTPS
 3. set the extension API base URL to that public HTTPS origin
-4. rebuild and reload the extension if permissions changed
+4. save or check that URL in settings and approve the Chrome permission request
+5. rebuild and reload the extension if your OAuth config changed
 
 Example shape:
 
@@ -175,17 +279,43 @@ pnpm --filter @superbhuman/api typecheck
 
 ## Troubleshooting
 
+### `Connect Gmail` is disabled
+
+- this build does not have `WXT_GOOGLE_OAUTH_CLIENT_ID` configured
+- set both `WXT_EXTENSION_KEY` and `WXT_GOOGLE_OAUTH_CLIENT_ID`
+- rebuild and reload the extension
+
+### `Google OAuth is not configured for this extension ID`
+
+- make sure the Chrome Extension OAuth client was created with the exact current extension ID
+- make sure the extension was built with the same `WXT_EXTENSION_KEY`
+- rebuild and reload after updating the client ID
+
+### `This Google account is not allowed to use the OAuth client yet`
+
+- add that account as a test user in Google Auth Platform
+- wait for Google Cloud changes to propagate, then reconnect
+
 ### `Check API` says `Could not reach tracking API`
 
 - make sure the API process is running
 - run `curl http://127.0.0.1:8787/healthz`
 - confirm the settings page is pointing at the same origin
 - reload the extension after rebuilding
+- if the URL is public HTTPS, save or check it in settings and approve the Chrome permission request
+
+### `Auth Diagnostics` says `Session ready with local fallback`
+
+- Google auth succeeded, but the tracking API was unavailable during session bootstrap
+- Gmail API features should still work
+- start the API, then click `Check API`
+- switch the API base URL to a public HTTPS origin if you want real remote opens
 
 ### `Read status registration failed`
 
-- this usually means the extension could not reach the tracking API
+- this usually means the extension could not reach the tracking API or does not have permission to reach its origin
 - fix the API URL or start the API process first
+- if the URL is public HTTPS, approve the permission prompt from settings first
 
 ### Read statuses panel shows sends but open count never changes
 
@@ -196,3 +326,12 @@ pnpm --filter @superbhuman/api typecheck
 
 - Postgres is optional in v1. If `DATABASE_URL` is unset, the API falls back to in-memory tracking storage.
 - In-memory mode resets tracked messages when the API process restarts.
+
+## Official Docs
+
+- [Chrome `chrome.identity`](https://developer.chrome.com/docs/extensions/reference/api/identity)
+- [Chrome manifest `oauth2`](https://developer.chrome.com/docs/extensions/reference/manifest/oauth2)
+- [Chrome permissions and host permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
+- [Gmail API scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
+- [Google Auth Platform audience and test users](https://developers.google.com/workspace/marketplace/configure-oauth-consent-screen)
+- [Sensitive scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification)

@@ -1,5 +1,6 @@
 import type {
   ApiSession,
+  AuthDiagnostics,
   ExtensionMessage,
   GmailApiListResponse,
   TrackRegisterRequest,
@@ -28,6 +29,10 @@ export function getApiSession(): Promise<ApiSession | null> {
 
 export function signInWithGoogle(): Promise<ApiSession | null> {
   return sendMessage<ApiSession | null>({ type: "auth:interactive-login" });
+}
+
+export function getAuthDiagnostics(): Promise<AuthDiagnostics> {
+  return sendMessage<AuthDiagnostics>({ type: "auth:get-diagnostics" });
 }
 
 export function gmailApiRequest<T>(

@@ -58,7 +58,12 @@ export async function getLatestArchiveSnapshot(): Promise<ArchiveRunSnapshot | u
 export async function loadTrackedMessages(): Promise<TrackedMessageRecord[]> {
   const result = await chrome.storage.local.get(TRACKED_MESSAGES_KEY);
   const messages = (result[TRACKED_MESSAGES_KEY] as TrackedMessageRecord[] | undefined) ?? [];
-  return messages.sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime());
+  return messages
+    .map((message) => ({
+      ...message,
+      registrationStatus: message.registrationStatus ?? "registered"
+    }))
+    .sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime());
 }
 
 export async function upsertTrackedMessage(record: TrackedMessageRecord): Promise<TrackedMessageRecord[]> {

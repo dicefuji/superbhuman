@@ -1,6 +1,6 @@
 import type { TrackedMessageRecord } from "@superbhuman/shared";
 
-import { formatTimestamp } from "../lib/runtime";
+import { cn, formatTimestamp } from "../lib/runtime";
 
 interface ReadStatusPanelProps {
   open: boolean;
@@ -42,12 +42,33 @@ export function ReadStatusPanel(props: ReadStatusPanelProps) {
               <div key={item.token} className="sb-read-status-item">
                 <div className="sb-read-status-row">
                   <div className="sb-command-title">{item.subject || "(No subject)"}</div>
-                  <span className="sb-status-pill">{item.openCount ? `${item.openCount} opens` : "Unopened"}</span>
+                  <span
+                    className={cn(
+                      "sb-status-pill",
+                      item.registrationStatus === "failed" && "is-danger",
+                      item.registrationStatus === "registered" && !item.openCount && "is-neutral"
+                    )}
+                  >
+                    {item.registrationStatus === "failed"
+                      ? "Registration failed"
+                      : item.openCount
+                        ? `${item.openCount} opens`
+                        : "Registered"}
+                  </span>
                 </div>
                 <div className="sb-command-description">{item.recipientEmails.join(", ") || "No recipients captured"}</div>
                 <div className="sb-command-description">Sent: {formatTimestamp(item.sentAt)}</div>
+                <div className="sb-command-description">
+                  Last refresh: {item.lastStatusCheckedAt ? formatTimestamp(item.lastStatusCheckedAt) : "Not checked yet"}
+                </div>
                 <div className="sb-command-description">First open: {formatTimestamp(item.firstOpenedAt)}</div>
                 <div className="sb-command-description">Last open: {formatTimestamp(item.lastOpenedAt)}</div>
+                {item.registrationError ? (
+                  <div className="sb-command-description">Registration error: {item.registrationError}</div>
+                ) : null}
+                {item.lastStatusError ? (
+                  <div className="sb-command-description">Last refresh error: {item.lastStatusError}</div>
+                ) : null}
               </div>
             ))
           )}
