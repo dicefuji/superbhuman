@@ -81,9 +81,13 @@ export interface TrackerStatus {
   openCount: number;
 }
 
+export type TrackingSourceKind = "gmail_proxy" | "apple_privacy" | "mail_client" | "unknown";
+
 export type TrackingRegistrationStatus = "registered" | "failed";
 
 export interface TrackedMessageRecord extends TrackerStatus {
+  threadId?: string;
+  messageId?: string;
   subject?: string;
   recipientEmails: string[];
   sentAt: string;
@@ -91,6 +95,7 @@ export interface TrackedMessageRecord extends TrackerStatus {
   registrationError?: string;
   lastStatusCheckedAt?: string;
   lastStatusError?: string;
+  lastSourceKind?: TrackingSourceKind;
 }
 
 export interface ComposeTrackingState {
@@ -171,6 +176,18 @@ export interface ApiSession {
   connectedAt?: string;
 }
 
+export interface TrackingSession {
+  userId: string;
+  email: string;
+  expiresAt: string;
+  connectedAt: string;
+}
+
+export interface TrackingMessagesPage {
+  items: TrackedMessageRecord[];
+  nextCursor?: string;
+}
+
 export interface AuthDiagnostics {
   extensionId: string;
   clientId?: string;
@@ -188,7 +205,11 @@ export type ExtensionMessage =
   | { type: "auth:get-diagnostics" }
   | { type: "auth:interactive-login" }
   | { type: "gmail:api"; path: string; method?: string; body?: unknown }
+  | { type: "tracking:auth-start" }
+  | { type: "tracking:get-session" }
+  | { type: "tracking:logout" }
   | { type: "tracking:health" }
+  | { type: "tracking:list-messages"; limit?: number; cursor?: string }
   | { type: "tracking:status"; token: string }
   | { type: "tracking:register"; payload: TrackRegisterRequest };
 
@@ -204,8 +225,9 @@ export interface TrackRegisterRequest {
 export interface TrackOpenEvent {
   token: string;
   openedAt: string;
-  userAgent?: string;
-  ipHash?: string;
+  normalizedUserAgent?: string;
+  ipFingerprint?: string;
+  sourceKind: TrackingSourceKind;
 }
 
 export interface GmailApiListResponse<T> {

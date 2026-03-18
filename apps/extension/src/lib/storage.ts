@@ -70,7 +70,13 @@ export async function upsertTrackedMessage(record: TrackedMessageRecord): Promis
   const current = await loadTrackedMessages();
   const next = current.filter((item) => item.token !== record.token);
   next.unshift(record);
-  const trimmed = next.slice(0, 20);
+  return saveTrackedMessages(next);
+}
+
+export async function saveTrackedMessages(records: TrackedMessageRecord[]): Promise<TrackedMessageRecord[]> {
+  const trimmed = records
+    .slice(0, 20)
+    .sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime());
   await chrome.storage.local.set({ [TRACKED_MESSAGES_KEY]: trimmed });
   return trimmed;
 }

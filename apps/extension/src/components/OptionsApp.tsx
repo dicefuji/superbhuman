@@ -1,9 +1,17 @@
-import type { ApiSession, AuthDiagnostics, UserPreferences } from "@superbhuman/shared";
+import type { ApiSession, AuthDiagnostics, TrackingSession, UserPreferences } from "@superbhuman/shared";
 import { useEffect, useMemo, useState } from "react";
 
-import { checkTrackingApiHealth, getApiSession, getAuthDiagnostics, signInWithGoogle } from "../lib/gmailApi";
+import {
+  checkTrackingApiHealth,
+  getApiSession,
+  getAuthDiagnostics,
+  getTrackingSession,
+  logoutTrackingSession,
+  signInWithGoogle,
+  startTrackingAuth
+} from "../lib/gmailApi";
 import { TRACKING_API_BASE_URL } from "../env";
-import { isTrackingBetaBuild, resolveApiBaseUrl } from "../lib/apiBaseUrl";
+import { isTrackingConfigured, resolveApiBaseUrl } from "../lib/apiBaseUrl";
 import { getMissingGoogleScopes, getRequiredGoogleScopes, hasConfiguredGoogleOAuth, hasRequiredGoogleScopes } from "../lib/googleAuth";
 import { formatTimestamp } from "../lib/runtime";
 import { loadPreferences, savePreferences } from "../lib/storage";
@@ -24,33 +32,41 @@ function formatScopeLabel(scope: string): string {
 export function OptionsApp() {
   const manifest = useMemo(() => chrome.runtime.getManifest() as ManifestWithOAuth, []);
   const requiredScopes = useMemo(() => getRequiredGoogleScopes(manifest), [manifest]);
-  const trackingBetaEnabled = useMemo(() => isTrackingBetaBuild(), []);
+  const trackingConfigured = useMemo(() => isTrackingConfigured(), []);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [trackingConnecting, setTrackingConnecting] = useState(false);
+  const [trackingLoggingOut, setTrackingLoggingOut] = useState(false);
   const [checkingTracking, setCheckingTracking] = useState(false);
   const [session, setSession] = useState<ApiSession | null>(null);
+  const [trackingSession, setTrackingSession] = useState<TrackingSession | null>(null);
   const [authDiagnostics, setAuthDiagnostics] = useState<AuthDiagnostics | null>(null);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
-  const [trackingHealth, setTrackingHealth] = useState<TrackingHealthStatus>(trackingBetaEnabled ? "checking" : "disabled");
+  const [trackingHealth, setTrackingHealth] = useState<TrackingHealthStatus>(trackingConfigured ? "checking" : "disabled");
   const [trackingHealthMessage, setTrackingHealthMessage] = useState<string>("");
   const [status, setStatus] = useState<string>("");
 
   useEffect(() => {
-    void Promise.all([loadPreferences(), getApiSession().catch(() => null)]).then(async ([loadedPreferences, apiSession]) => {
+    void Promise.all([
+      loadPreferences(),
+      getApiSession().catch(() => null),
+      getTrackingSession().catch(() => null)
+    ]).then(async ([loadedPreferences, apiSession, hostedTrackingSession]) => {
       const diagnostics = await getAuthDiagnostics().catch(() => null);
       setPreferences(loadedPreferences);
       setSession(apiSession);
+      setTrackingSession(hostedTrackingSession);
       setAuthDiagnostics(diagnostics);
       setLoading(false);
     });
   }, []);
 
   useEffect(() => {
-    if (!trackingBetaEnabled) {
+    if (!trackingConfigured) {
       setTrackingHealth("disabled");
-      setTrackingHealthMessage("Read statuses are not available in this build.");
+      setTrackingHealthMessage("Read statuses are not configured in this build.");
       return;
     }
 
@@ -61,17 +77,17 @@ export function OptionsApp() {
         const apiBaseUrl = resolveApiBaseUrl();
         await checkTrackingApiHealth();
         setTrackingHealth("reachable");
-        setTrackingHealthMessage(`Beta backend reachable at ${new URL(apiBaseUrl).origin}.`);
+        setTrackingHealthMessage(`Hosted backend reachable at ${new URL(apiBaseUrl).origin}.`);
       } catch (error) {
         setTrackingHealth("error");
-        setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the beta tracking backend.");
+        setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the hosted tracking backend.");
       } finally {
         setCheckingTracking(false);
       }
     };
 
     void refresh();
-  }, [trackingBetaEnabled]);
+  }, [trackingConfigured]);
 
   useEffect(() => {
     if (!connecting) {
@@ -103,8 +119,8 @@ export function OptionsApp() {
 
   const oauthConfigured = hasConfiguredGoogleOAuth(manifest);
   const missingScopes = getMissingGoogleScopes(session?.grantedScopes, requiredScopes);
-  const authReady = Boolean(session && hasRequiredGoogleScopes(session, requiredScopes));
-  const trackingApiOrigin = trackingBetaEnabled && TRACKING_API_BASE_URL ? new URL(resolveApiBaseUrl()).origin : undefined;
+  const gmailAuthReady = Boolean(session && hasRequiredGoogleScopes(session, requiredScopes));
+  const trackingApiOrigin = trackingConfigured && TRACKING_API_BASE_URL ? new URL(resolveApiBaseUrl()).origin : undefined;
 
   async function refreshAuthDiagnostics() {
     try {
@@ -115,9 +131,9 @@ export function OptionsApp() {
   }
 
   async function refreshTrackingHealth() {
-    if (!trackingBetaEnabled) {
+    if (!trackingConfigured) {
       setTrackingHealth("disabled");
-      setTrackingHealthMessage("Read statuses are not available in this build.");
+      setTrackingHealthMessage("Read statuses are not configured in this build.");
       return;
     }
 
@@ -126,10 +142,10 @@ export function OptionsApp() {
     try {
       await checkTrackingApiHealth();
       setTrackingHealth("reachable");
-      setTrackingHealthMessage(`Beta backend reachable at ${trackingApiOrigin}.`);
+      setTrackingHealthMessage(`Hosted backend reachable at ${trackingApiOrigin}.`);
     } catch (error) {
       setTrackingHealth("error");
-      setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the beta tracking backend.");
+      setTrackingHealthMessage(error instanceof Error ? error.message : "Could not reach the hosted tracking backend.");
     } finally {
       setCheckingTracking(false);
     }
@@ -151,11 +167,7 @@ export function OptionsApp() {
     }
   }
 
-  async function connect() {
-    console.info("[superbhuman] Connect Gmail clicked", {
-      extensionId: chrome.runtime.id,
-      clientId: manifest.oauth2?.client_id
-    });
+  async function connectGmail() {
     setConnecting(true);
     setStatus("Opening Google account chooser...");
     try {
@@ -170,46 +182,52 @@ export function OptionsApp() {
     }
   }
 
+  async function enableTracking() {
+    setTrackingConnecting(true);
+    setStatus("Opening Google sign-in for hosted read statuses...");
+    try {
+      const nextSession = await startTrackingAuth();
+      setTrackingSession(nextSession);
+      setStatus(nextSession ? `Read statuses enabled for ${nextSession.email}.` : "Read status sign-in failed.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Read status sign-in failed.");
+    } finally {
+      setTrackingConnecting(false);
+      await refreshTrackingHealth();
+    }
+  }
+
+  async function disableTracking() {
+    setTrackingLoggingOut(true);
+    try {
+      await logoutTrackingSession();
+      setTrackingSession(null);
+      setStatus("Read statuses disabled.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not disable read statuses.");
+    } finally {
+      setTrackingLoggingOut(false);
+    }
+  }
+
   return (
     <main className="sb-options">
       <section className="sb-options-card">
         <h1 className="sb-panel-title">Superbhuman</h1>
         <p className="sb-panel-copy">
-          Gmail power layer for keyboard-driven triage, split inboxes, and fast bulk actions.
+          Gmail power layer for keyboard-driven triage, split inboxes, fast bulk actions, and best-effort read statuses.
         </p>
-
-        <div className="sb-field">
-          <strong>Google connection</strong>
-          <p className="sb-muted">
-            Extension ID: <code>{chrome.runtime.id}</code>
-          </p>
-          <p className="sb-muted">
-            {oauthConfigured
-              ? session
-                ? `Connected as ${session.email ?? session.userId}.`
-                : "OAuth is configured in this build, but Gmail is not connected yet."
-              : "OAuth is not configured in this build yet. Set WXT_GOOGLE_OAUTH_CLIENT_ID and WXT_EXTENSION_KEY, then rebuild and reload."}
-          </p>
-          <button
-            className="sb-button sb-button-primary"
-            type="button"
-            onClick={() => void connect()}
-            disabled={!oauthConfigured || connecting}
-          >
-            {connecting ? "Connecting..." : "Connect Gmail"}
-          </button>
-        </div>
 
         <div className="sb-status-grid">
           <section className="sb-status-card">
             <div className="sb-read-status-row">
               <strong>Gmail Auth</strong>
-              <span className={`sb-status-pill ${authReady ? "" : oauthConfigured ? "is-warning" : "is-danger"}`}>
-                {authReady ? "Ready" : oauthConfigured ? "Needs consent" : "Not configured"}
+              <span className={`sb-status-pill ${gmailAuthReady ? "" : oauthConfigured ? "is-warning" : "is-danger"}`}>
+                {gmailAuthReady ? "Ready" : oauthConfigured ? "Needs consent" : "Not configured"}
               </span>
             </div>
             <p className="sb-muted">
-              {authReady
+              {gmailAuthReady
                 ? "Gmail API features are unlocked and do not require any Superbhuman backend."
                 : oauthConfigured
                   ? "Connect Gmail and approve the required scopes before using Gmail-powered actions."
@@ -222,6 +240,14 @@ export function OptionsApp() {
             {missingScopes.length && oauthConfigured ? (
               <p className="sb-muted">Missing scopes: {missingScopes.map(formatScopeLabel).join(", ")}</p>
             ) : null}
+            <button
+              className="sb-button sb-button-primary"
+              type="button"
+              onClick={() => void connectGmail()}
+              disabled={!oauthConfigured || connecting}
+            >
+              {connecting ? "Connecting..." : "Connect Gmail"}
+            </button>
           </section>
 
           <section className="sb-status-card">
@@ -229,42 +255,50 @@ export function OptionsApp() {
               <strong>Read Statuses</strong>
               <span
                 className={`sb-status-pill ${
-                  trackingHealth === "reachable"
-                    ? ""
-                    : trackingHealth === "error"
-                      ? "is-danger"
-                      : trackingHealth === "checking"
-                        ? "is-warning"
-                        : "is-neutral"
+                  !trackingConfigured
+                    ? "is-neutral"
+                    : trackingSession
+                      ? ""
+                      : trackingHealth === "error"
+                        ? "is-danger"
+                        : "is-warning"
                 }`}
               >
-                {trackingHealth === "reachable"
-                  ? "Beta"
-                  : trackingHealth === "error"
-                    ? "Unavailable"
-                    : trackingHealth === "checking"
-                      ? "Checking"
-                      : "Coming soon"}
+                {!trackingConfigured ? "Not configured" : trackingSession ? "Enabled" : "Needs setup"}
               </span>
             </div>
             <p className="sb-muted">
-              {trackingBetaEnabled
-                ? "Read statuses run on a fixed Superbhuman-hosted beta backend and are not part of the core launch path."
-                : "Read statuses are not included in this build. Core Gmail features remain fully usable without any backend."}
+              Best-effort opens for sent emails. Gmail image proxying and privacy protections can distort exact read timing and counts.
             </p>
             <p className="sb-muted">{trackingHealthMessage}</p>
-            {trackingBetaEnabled && trackingApiOrigin ? (
+            {trackingConfigured && trackingApiOrigin ? (
               <p className="sb-muted">
-                Beta backend origin: <code className="sb-diagnostics-value">{trackingApiOrigin}</code>
+                Hosted backend origin: <code className="sb-diagnostics-value">{trackingApiOrigin}</code>
               </p>
             ) : null}
-            {trackingBetaEnabled ? (
-              <div className="sb-diagnostics-actions">
-                <button className="sb-button sb-button-secondary" type="button" onClick={() => void refreshTrackingHealth()}>
-                  {checkingTracking ? "Checking..." : "Check beta backend"}
-                </button>
-              </div>
+            {trackingSession ? (
+              <p className="sb-muted">
+                Enabled as <code className="sb-diagnostics-value">{trackingSession.email}</code>
+              </p>
             ) : null}
+            <div className="sb-diagnostics-actions">
+              {trackingConfigured ? (
+                trackingSession ? (
+                  <button className="sb-button sb-button-secondary" type="button" onClick={() => void disableTracking()}>
+                    {trackingLoggingOut ? "Disabling..." : "Disable Read Statuses"}
+                  </button>
+                ) : (
+                  <button className="sb-button sb-button-primary" type="button" onClick={() => void enableTracking()}>
+                    {trackingConnecting ? "Enabling..." : "Enable Read Statuses"}
+                  </button>
+                )
+              ) : null}
+              {trackingConfigured ? (
+                <button className="sb-button sb-button-secondary" type="button" onClick={() => void refreshTrackingHealth()}>
+                  {checkingTracking ? "Checking..." : "Check backend"}
+                </button>
+              ) : null}
+            </div>
           </section>
 
           <section className="sb-status-card sb-status-card-wide">
@@ -325,28 +359,6 @@ export function OptionsApp() {
           </section>
         </div>
 
-        {trackingBetaEnabled ? (
-          <div className="sb-field">
-            <label>
-              <input
-                type="checkbox"
-                checked={preferences.trackingEnabledByDefault}
-                onChange={(event) =>
-                  setPreferences((current) =>
-                    current
-                      ? {
-                          ...current,
-                          trackingEnabledByDefault: event.target.checked
-                        }
-                      : current
-                  )
-                }
-              />{" "}
-              Enable read statuses by default in beta builds
-            </label>
-          </div>
-        ) : null}
-
         <div className="sb-field">
           <label>
             <input
@@ -363,7 +375,7 @@ export function OptionsApp() {
                 )
               }
             />{" "}
-            Prefer Chrome-safe shortcut remaps
+            Use Chrome-safe shortcuts
           </label>
         </div>
 
@@ -383,7 +395,7 @@ export function OptionsApp() {
                 )
               }
             />{" "}
-            Keep unread when running Get Me To Zero
+            Keep unread emails out of Get Me To Zero
           </label>
         </div>
 
@@ -403,7 +415,7 @@ export function OptionsApp() {
                 )
               }
             />{" "}
-            Keep starred when running Get Me To Zero
+            Keep starred emails out of Get Me To Zero
           </label>
         </div>
 

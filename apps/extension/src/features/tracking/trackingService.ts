@@ -170,9 +170,6 @@ export class ComposeTrackingController {
       return;
     }
 
-    const pixelUrl = buildTrackingPixelUrl(apiBaseUrl, state.token);
-    body.innerHTML = injectTrackingPixel(body.innerHTML, pixelUrl, state.token);
-
     await registerTracking({
       token: state.token,
       recipientEmails,
@@ -180,6 +177,8 @@ export class ComposeTrackingController {
       subject
     })
       .then(() => {
+        const pixelUrl = buildTrackingPixelUrl(apiBaseUrl, state.token!);
+        body.innerHTML = injectTrackingPixel(body.innerHTML, pixelUrl, state.token!);
         const record = createRecord("registered");
         this.callbacks.onRegistered?.(record, apiBaseUrl);
       })

@@ -7,16 +7,24 @@ import {
   type Platform,
   type SplitMode,
   type TrackedMessageRecord,
+  type TrackingSession,
   type TrackerStatus,
   type UserPreferences
 } from "@superbhuman/shared";
 import { startTransition, useEffect, useRef, useState } from "react";
 
 import { getPlatform } from "../env";
-import { isTrackingBetaBuild } from "../lib/apiBaseUrl";
-import { getApiSession, fetchTrackingStatus, gmailBatchDelete, gmailCreateFilter, gmailListMessages } from "../lib/gmailApi";
+import { isTrackingConfigured } from "../lib/apiBaseUrl";
+import { getApiSession, getTrackingSession, gmailBatchDelete, gmailCreateFilter, gmailListMessages, listTrackingMessages } from "../lib/gmailApi";
 import { hasRequiredGoogleScopes } from "../lib/googleAuth";
-import { loadPreferences, loadTrackedMessages, savePreferences, updatePreferences, upsertTrackedMessage } from "../lib/storage";
+import {
+  loadPreferences,
+  loadTrackedMessages,
+  savePreferences,
+  saveTrackedMessages,
+  updatePreferences,
+  upsertTrackedMessage
+} from "../lib/storage";
 import { previewMassArchive, runMassArchive, type ArchivePreviewOptions } from "../features/archive/archiveService";
 import { executeCommand, searchCommands } from "../features/command/commandRegistry";
 import { GmailDomAdapter, type ThreadRowSnapshot } from "../features/gmail/domAdapter";
@@ -45,7 +53,7 @@ const INITIAL_ROUTE: GmailRouteState = {
 
 export function Shell() {
   const platform = useRef<Platform>(getPlatform()).current;
-  const trackingBetaEnabled = useRef<boolean>(isTrackingBetaBuild()).current;
+  const trackingConfigured = useRef<boolean>(isTrackingConfigured()).current;
   const adapterRef = useRef<GmailDomAdapter | null>(null);
   const trackingRef = useRef<ComposeTrackingController | null>(null);
   const preferencesRef = useRef<UserPreferences>(DEFAULT_PREFERENCES);
@@ -54,6 +62,7 @@ export function Shell() {
 
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_PREFERENCES);
   const [session, setSession] = useState<ApiSession | null>(null);
+  const [trackingSession, setTrackingSession] = useState<TrackingSession | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [route, setRoute] = useState<GmailRouteState>(INITIAL_ROUTE);
   const [selectedThread, setSelectedThread] = useState<ThreadRowSnapshot | undefined>();
@@ -77,9 +86,10 @@ export function Shell() {
   const [trackedMessages, setTrackedMessages] = useState<TrackedMessageRecord[]>([]);
   const [readStatusOpen, setReadStatusOpen] = useState(false);
   const [readStatusRefreshing, setReadStatusRefreshing] = useState(false);
+  const trackingEnabled = trackingConfigured && Boolean(trackingSession);
 
   const commands = searchCommands(commandQuery).filter((command: CommandDefinition) =>
-    trackingBetaEnabled ? true : command.id !== "toggle-tracking"
+    trackingEnabled ? true : command.id !== "toggle-tracking"
   );
 
   const pushToast = (message: string) => {
@@ -118,7 +128,7 @@ export function Shell() {
       setSplitCounts(nextSplitCounts);
     });
 
-    if (trackingBetaEnabled && trackingRef.current && nextRoute.route === "thread") {
+    if (trackingEnabled && trackingRef.current && nextRoute.route === "thread") {
       void trackingRef.current.resolveCurrentThreadStatus().then(setThreadStatus).catch(() => setThreadStatus(undefined));
     } else {
       setThreadStatus(undefined);
@@ -126,11 +136,17 @@ export function Shell() {
   };
 
   useEffect(() => {
-    void Promise.all([loadPreferences(), loadTrackedMessages(), getApiSession().catch(() => null)]).then(([loaded, tracked, apiSession]) => {
+    void Promise.all([
+      loadPreferences(),
+      loadTrackedMessages(),
+      getApiSession().catch(() => null),
+      getTrackingSession().catch(() => null)
+    ]).then(([loaded, tracked, apiSession, nextTrackingSession]) => {
       preferencesRef.current = loaded;
       splitModeRef.current = loaded.preferredSplitMode;
       setPreferences(loaded);
       setSession(apiSession);
+      setTrackingSession(nextTrackingSession);
       setAuthLoaded(true);
       setSplitModeState(loaded.preferredSplitMode);
       setArchiveOptions((current) => ({
@@ -145,17 +161,40 @@ export function Shell() {
   }, []);
 
   useEffect(() => {
+    const handleStorageChange: Parameters<typeof chrome.storage.onChanged.addListener>[0] = (changes, areaName) => {
+      if (areaName !== "local") {
+        return;
+      }
+
+      if (changes.apiSession) {
+        void getApiSession()
+          .then(setSession)
+          .catch(() => setSession(null));
+      }
+
+      if (changes.trackingSession) {
+        void getTrackingSession()
+          .then(setTrackingSession)
+          .catch(() => setTrackingSession(null));
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
+
+  useEffect(() => {
     const adapter = new GmailDomAdapter();
     adapter.start();
     adapterRef.current = adapter;
 
     const unsubscribe = adapter.subscribe(() => syncDomStateRef.current());
 
-    if (trackingBetaEnabled) {
+    if (trackingEnabled) {
       const tracking = new ComposeTrackingController(adapter, preferencesRef.current, {
         onRegistered: (record) => {
           setReadStatusOpen(true);
-          pushToast(`Read status armed for ${record.subject || "your email"}. Open the Read Statuses panel to track opens.`);
+          pushToast(`Best-effort opens armed for ${record.subject || "your email"}. Open Read Statuses to monitor activity.`);
           void upsertTrackedMessage(record).then(setTrackedMessages);
         },
         onRegistrationFailed: (record) => {
@@ -177,7 +216,7 @@ export function Shell() {
       trackingRef.current = null;
       adapter.stop();
     };
-  }, [trackingBetaEnabled]);
+  }, [trackingEnabled]);
 
   useEffect(() => {
     const handler = () => {
@@ -191,11 +230,11 @@ export function Shell() {
 
   useEffect(() => {
     preferencesRef.current = preferences;
-    if (trackingBetaEnabled) {
+    if (trackingEnabled) {
       trackingRef.current?.setPreferences(preferences);
     }
     syncDomStateRef.current();
-  }, [preferences, trackingBetaEnabled]);
+  }, [preferences, trackingEnabled]);
 
   useEffect(() => {
     trackedMessagesRef.current = trackedMessages;
@@ -208,18 +247,21 @@ export function Shell() {
   }, [splitMode]);
 
   useEffect(() => {
-    if (!trackingBetaEnabled || !trackedMessages.length) {
+    if (!trackingEnabled) {
+      setReadStatusOpen(false);
+      setReadStatusRefreshing(false);
+      setThreadStatus(undefined);
       return;
     }
 
-    void refreshTrackedMessages();
+    void refreshTrackedMessages({ silent: true });
 
     const intervalId = window.setInterval(() => {
-      void refreshTrackedMessages();
+      void refreshTrackedMessages({ silent: true });
     }, 30000);
 
     return () => window.clearInterval(intervalId);
-  }, [trackedMessages.length, trackingBetaEnabled]);
+  }, [trackingEnabled, trackingSession?.userId]);
 
   useEffect(() => {
     return mountKeyboardController({
@@ -299,8 +341,12 @@ export function Shell() {
           }
         },
         toggleTracking: () => {
-          if (!trackingBetaEnabled) {
+          if (!trackingConfigured) {
             return Promise.reject(new Error("Read statuses are not available in this build."));
+          }
+
+          if (!trackingSession) {
+            return Promise.reject(new Error("Enable Read Statuses in Superbhuman settings first."));
           }
 
           return Promise.resolve(trackingRef.current?.toggleActiveCompose());
@@ -441,49 +487,38 @@ export function Shell() {
     setOnboardingVisible(false);
   }
 
-  async function refreshTrackedMessages() {
-    if (!trackingBetaEnabled) {
+  async function refreshTrackedMessages(options: { silent?: boolean } = {}) {
+    if (!trackingEnabled) {
       return;
     }
 
     const currentMessages = trackedMessagesRef.current;
-    if (!currentMessages.length) {
-      return;
-    }
-
     setReadStatusRefreshing(true);
     try {
-      const refreshed = await Promise.all(
-        currentMessages.map(async (message) => {
-          const checkedAt = new Date().toISOString();
-          let next: TrackedMessageRecord;
-
-          try {
-            const status = await fetchTrackingStatus(message.token);
-            next = {
-              ...message,
-              ...status,
-              lastStatusCheckedAt: checkedAt,
-              lastStatusError: undefined
-            };
-          } catch (error) {
-            next = {
-              ...message,
-              lastStatusCheckedAt: checkedAt,
-              lastStatusError: error instanceof Error ? error.message : "Could not refresh read status."
-            };
-          }
-
-          await upsertTrackedMessage(next);
-          return next;
-        })
+      const checkedAt = new Date().toISOString();
+      const remotePage = await listTrackingMessages(20);
+      const remoteMessages: TrackedMessageRecord[] = remotePage.items.map((message) => ({
+        ...message,
+        lastStatusCheckedAt: checkedAt,
+        lastStatusError: undefined
+      }));
+      const remoteByToken = new Map(remoteMessages.map((message) => [message.token, message]));
+      const failedLocalOnly = currentMessages.filter(
+        (message) => message.registrationStatus === "failed" && !remoteByToken.has(message.token)
       );
-
-      const ordered = refreshed.sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime());
-      setTrackedMessages(ordered);
+      const merged: TrackedMessageRecord[] = Array.from(remoteByToken.values())
+        .concat(
+          failedLocalOnly.map((message) => ({
+            ...message,
+            lastStatusCheckedAt: checkedAt
+          }))
+        )
+        .sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime());
+      const saved = await saveTrackedMessages(merged);
+      setTrackedMessages(saved);
 
       const currentThreadTokens = adapterRef.current?.getCurrentThreadTokens() ?? [];
-      const current = ordered.find((message) => currentThreadTokens.includes(message.token));
+      const current = saved.find((message) => currentThreadTokens.includes(message.token));
       if (current) {
         setThreadStatus({
           token: current.token,
@@ -491,6 +526,17 @@ export function Shell() {
           lastOpenedAt: current.lastOpenedAt,
           openCount: current.openCount
         });
+      } else {
+        setThreadStatus(undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not refresh read statuses.";
+      if (message.includes("Enable Read Statuses again")) {
+        setTrackingSession(null);
+      }
+
+      if (!options.silent || message.includes("Enable Read Statuses again")) {
+        pushToast(message);
       }
     } finally {
       setReadStatusRefreshing(false);
@@ -505,7 +551,7 @@ export function Shell() {
         visibleCount={visibleCount}
         importantCount={splitCounts.important}
         otherCount={splitCounts.other}
-        showReadStatuses={trackingBetaEnabled}
+        showReadStatuses={trackingEnabled}
         trackedCount={trackedMessages.length}
         openedCount={trackedMessages.filter((message) => message.openCount > 0).length}
         onModeChange={(mode) => {
@@ -513,7 +559,7 @@ export function Shell() {
           void updatePreferences((current) => ({ ...current, preferredSplitMode: mode })).then(setPreferences);
         }}
         onOpenReadStatuses={() => {
-          if (!trackingBetaEnabled) {
+          if (!trackingEnabled) {
             return;
           }
 
@@ -550,8 +596,8 @@ export function Shell() {
         onClose={() => setArchiveOpen(false)}
       />
 
-      {trackingBetaEnabled ? <ThreadStatusCard status={threadStatus} /> : null}
-      {trackingBetaEnabled ? (
+      {trackingEnabled ? <ThreadStatusCard status={threadStatus} /> : null}
+      {trackingEnabled ? (
         <ReadStatusPanel
           open={readStatusOpen}
           items={trackedMessages}

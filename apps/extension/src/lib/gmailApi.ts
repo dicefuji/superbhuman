@@ -3,6 +3,8 @@ import type {
   AuthDiagnostics,
   ExtensionMessage,
   GmailApiListResponse,
+  TrackingMessagesPage,
+  TrackingSession,
   TrackRegisterRequest,
   TrackerStatus
 } from "@superbhuman/shared";
@@ -78,6 +80,22 @@ export function gmailCreateFilter(body: unknown) {
 
 export function registerTracking(payload: TrackRegisterRequest) {
   return sendMessage<void>({ type: "tracking:register", payload });
+}
+
+export function startTrackingAuth(): Promise<TrackingSession | null> {
+  return sendMessage<TrackingSession | null>({ type: "tracking:auth-start" });
+}
+
+export function getTrackingSession(): Promise<TrackingSession | null> {
+  return sendMessage<TrackingSession | null>({ type: "tracking:get-session" });
+}
+
+export function logoutTrackingSession(): Promise<void> {
+  return sendMessage<void>({ type: "tracking:logout" });
+}
+
+export function listTrackingMessages(limit = 20, cursor?: string) {
+  return sendMessage<TrackingMessagesPage>({ type: "tracking:list-messages", limit, cursor });
 }
 
 export function fetchTrackingStatus(token: string) {

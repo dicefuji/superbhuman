@@ -1,6 +1,6 @@
 interface ImportMetaEnv {
   readonly WXT_PUBLIC_TRACKING_API_BASE_URL?: string;
-  readonly WXT_PUBLIC_ENABLE_TRACKING_BETA?: string;
+  readonly WXT_PUBLIC_TRACKING_GOOGLE_CLIENT_ID?: string;
 }
 
 interface ImportMeta {

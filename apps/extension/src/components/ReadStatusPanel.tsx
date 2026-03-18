@@ -22,7 +22,10 @@ export function ReadStatusPanel(props: ReadStatusPanelProps) {
         <div className="sb-read-status-header">
           <div>
             <h2 className="sb-panel-title">Read Statuses</h2>
-            <p className="sb-panel-copy">Tracked messages appear here after you send them from Gmail with tracking enabled.</p>
+            <p className="sb-panel-copy">
+              Best-effort opens appear here after you send tracked email from Gmail. Privacy protections and image proxies can
+              distort exact timing and counts.
+            </p>
           </div>
           <button className="sb-button sb-button-secondary" type="button" onClick={props.onRefresh}>
             {props.refreshing ? "Refreshing..." : "Refresh"}
@@ -34,7 +37,7 @@ export function ReadStatusPanel(props: ReadStatusPanelProps) {
             <div className="sb-read-status-item">
               <div className="sb-command-title">No tracked sends yet</div>
               <div className="sb-command-description">
-                Open compose, leave “Read Status On” enabled, send an email, then come back here.
+                Open compose, leave “Read Status On” enabled, send an email, then come back here for best-effort open updates.
               </div>
             </div>
           ) : (
@@ -63,6 +66,7 @@ export function ReadStatusPanel(props: ReadStatusPanelProps) {
                 </div>
                 <div className="sb-command-description">First open: {formatTimestamp(item.firstOpenedAt)}</div>
                 <div className="sb-command-description">Last open: {formatTimestamp(item.lastOpenedAt)}</div>
+                {item.lastSourceKind ? <div className="sb-command-description">Latest source: {item.lastSourceKind}</div> : null}
                 {item.registrationError ? (
                   <div className="sb-command-description">Registration error: {item.registrationError}</div>
                 ) : null}

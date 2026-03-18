@@ -133,17 +133,16 @@ pnpm --filter @superbhuman/extension build
 
 Reload the unpacked extension after every rebuild.
 
-## Internal Read-Status Beta
+## Hosted Read Statuses
 
-Read statuses are phase 2. They are not part of the normal public build.
-
-Only beta builds should include them, using a fixed hosted backend defined at build time.
+Read statuses stay out of the default Gmail-only build unless the extension is built against a fixed hosted backend and
+tracking Google client.
 
 Required extension build flags:
 
 ```bash
-export WXT_PUBLIC_ENABLE_TRACKING_BETA='true'
 export WXT_PUBLIC_TRACKING_API_BASE_URL='https://track.superbhuman.example'
+export WXT_PUBLIC_TRACKING_GOOGLE_CLIENT_ID='YOUR_TRACKING_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com'
 ```
 
 When those flags are absent, the public extension:
@@ -152,14 +151,27 @@ When those flags are absent, the public extension:
 - does not ask users for a backend URL
 - keeps all Gmail features usable with no backend dependency
 
-### Beta Backend Scope
+### Hosted Backend Scope
 
 The hosted read-status backend should stay narrow:
 
 - `GET /healthz`
+- `POST /auth/google/exchange`
+- `GET /auth/session`
+- `POST /auth/logout`
 - `POST /track/register`
+- `GET /track/messages`
 - `GET /track/status/:token`
 - `GET /t/:token.gif`
+
+Required backend env:
+
+```bash
+export DATABASE_URL='postgres://...'
+export TRACKING_GOOGLE_OAUTH_CLIENT_ID='YOUR_TRACKING_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com'
+export TRACKING_GOOGLE_OAUTH_CLIENT_SECRET='YOUR_TRACKING_GOOGLE_WEB_CLIENT_SECRET'
+export TRACKING_EVENT_SECRET='LONG_RANDOM_SECRET'
+```
 
 ## Everyday Testing
 
@@ -175,19 +187,20 @@ The hosted read-status backend should stay narrow:
 - counts in the top bar show how many visible Gmail rows currently fall into each split
 - use command center actions like `Move to Important` or `Move to Other` on a selected thread to tune the split
 
-### Internal Read-Status Beta
+### Hosted Read Statuses
 
-Only beta builds expose the read-status UI. In a beta build:
+Only hosted-tracking builds expose the read-status UI. In a hosted build:
 
 - open Gmail compose
 - verify the compose toolbar shows `Read Status On`
+- enable read statuses from the extension options page if they are not already enabled
 - send an email
 - open the `Read Statuses` button in the floating bar
 - your tracked send should appear there with subject, recipients, sent time, and current open count
+- opens should be described and interpreted as best-effort, not guaranteed human reads
 
-The read-status backend must be public HTTPS and continuously reachable while recipient opens are happening.
-
-Public builds should not instruct users to run local tunnels or paste backend URLs.
+The read-status backend must be public HTTPS and continuously reachable while recipient opens are happening, but end
+users should never be asked to run tunnels or paste backend URLs.
 
 ## Development Commands
 
@@ -238,13 +251,13 @@ pnpm --filter @superbhuman/api typecheck
 ### Read statuses show as unavailable
 
 - this is expected in the normal public build
-- read statuses only appear when the extension is built with the beta tracking flags
+- read statuses only appear when the extension is built with the hosted tracking env vars
 
-### Read-status beta backend cannot be reached
+### Hosted read-status backend cannot be reached
 
 - core Gmail features should still work
 - verify the hosted backend responds to `/healthz`
-- rebuild the extension with the correct `WXT_PUBLIC_TRACKING_API_BASE_URL`
+- rebuild the extension with the correct hosted tracking env vars
 
 ### Read statuses panel shows sends but open count never changes
 
@@ -255,7 +268,7 @@ pnpm --filter @superbhuman/api typecheck
 ## Notes
 
 - Phase 1 is Gmail features first.
-- Read statuses are phase 2 and should stay behind a fixed-origin hosted beta until auth, durable storage, monitoring, and abuse controls are in place.
+- Read statuses are phase 2 and should stay behind a fixed-origin hosted backend until auth, durable storage, monitoring, and abuse controls are in place.
 - The backend should not receive Gmail access tokens.
 
 ## Official Docs

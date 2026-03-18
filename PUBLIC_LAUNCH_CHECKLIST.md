@@ -7,7 +7,8 @@ This checklist covers the non-code work required to turn the current repo into a
 ### Product
 
 - Confirm the default build ships Gmail features only.
-- Keep read statuses disabled unless `WXT_PUBLIC_ENABLE_TRACKING_BETA=true`.
+- Keep read statuses disabled unless the build includes both `WXT_PUBLIC_TRACKING_API_BASE_URL` and
+  `WXT_PUBLIC_TRACKING_GOOGLE_CLIENT_ID`.
 - Verify a fresh install works with no Superbhuman backend available.
 
 ### Google OAuth
@@ -42,24 +43,29 @@ This checklist covers the non-code work required to turn the current repo into a
 - Test command center, split inbox, archive preview/run, and Gmail cleanup actions.
 - Confirm backend downtime does not block Gmail features.
 
-## Phase 2: Hosted Read-Status Beta
+## Phase 2: Hosted Read Statuses
 
 ### Backend Product Shape
 
-- Use a fixed first-party HTTPS origin for the beta backend.
+- Use a fixed first-party HTTPS origin for the hosted backend.
 - Do not accept user-provided API origins in the public product UI.
 - Keep the public backend surface narrow:
   - `GET /healthz`
+  - `POST /auth/google/exchange`
+  - `GET /auth/session`
+  - `POST /auth/logout`
   - `POST /track/register`
+  - `GET /track/messages`
   - `GET /track/status/:token`
   - `GET /t/:token.gif`
 
 ### Data / Auth
 
-- Add backend auth tied to the Google identity used in the extension.
+- Add backend auth tied to the Google identity used in the extension via a dedicated hosted tracking OAuth client.
 - Associate tracking tokens with a user or account.
 - Prevent cross-user status access.
 - Use durable Postgres-backed persistence in production.
+- Store only backend session tokens server-side; do not send Gmail access tokens to the backend.
 
 ### Operations
 
@@ -70,7 +76,11 @@ This checklist covers the non-code work required to turn the current repo into a
 
 ### Beta Validation
 
+- Verify hosted sign-in succeeds from the extension options page.
+- Verify session restore works on extension restart.
 - Verify registration succeeds from the extension.
+- Verify `GET /track/messages` hydrates the panel for the signed-in user only.
 - Verify pixel opens increment `openCount` through the public HTTPS endpoint.
 - Verify status refresh stays prompt and correct.
+- Verify UI copy consistently frames opens as best-effort.
 - Verify outages only degrade read statuses and do not break Gmail features.

@@ -1,10 +1,10 @@
-import { TRACKING_API_BASE_URL, TRACKING_BETA_ENABLED } from "../env";
+import { TRACKING_API_BASE_URL, TRACKING_ENABLED } from "../env";
 
 export function normalizeApiBaseUrl(value?: string): string {
   const rawValue = value?.trim();
 
   if (!rawValue) {
-    throw new Error("Read statuses beta is not configured for this build.");
+    throw new Error("Read statuses are not configured in this build.");
   }
 
   let url: URL;
@@ -21,8 +21,8 @@ export function normalizeApiBaseUrl(value?: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-export function isTrackingBetaBuild(): boolean {
-  return TRACKING_BETA_ENABLED;
+export function isTrackingConfigured(): boolean {
+  return TRACKING_ENABLED;
 }
 
 export function resolveApiBaseUrl(): string {

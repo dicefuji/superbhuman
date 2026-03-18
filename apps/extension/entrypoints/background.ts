@@ -1,13 +1,19 @@
-import {
-  type ApiSession,
-  type AuthDiagnostics,
-  type ExtensionMessage
+import type {
+  ApiSession,
+  AuthDiagnostics,
+  ExtensionMessage,
+  TrackingMessagesPage,
+  TrackingSession
 } from "@superbhuman/shared";
 
-import { isTrackingBetaBuild, resolveApiBaseUrl } from "../src/lib/apiBaseUrl";
+import { TRACKING_GOOGLE_CLIENT_ID } from "../src/env";
+import { isTrackingConfigured, resolveApiBaseUrl } from "../src/lib/apiBaseUrl";
 import { getRequiredGoogleScopes, hasConfiguredGoogleOAuth, hasRequiredGoogleScopes } from "../src/lib/googleAuth";
 
 const SESSION_KEY = "apiSession";
+const TRACKING_SESSION_KEY = "trackingSession";
+const TRACKING_AUTH_SCOPES = ["openid", "email", "profile"] as const;
+
 let lastAuthStage: string | undefined;
 let lastAuthError: string | undefined;
 let lastRawAuthError: string | undefined;
@@ -16,6 +22,16 @@ let lastAuthUpdatedAt: string | undefined;
 interface GoogleAuthorization {
   grantedScopes: string[];
   token: string;
+}
+
+interface StoredTrackingSession {
+  sessionToken: string;
+  session: TrackingSession;
+}
+
+interface TrackingAuthExchangeResponse {
+  sessionToken: string;
+  session: TrackingSession;
 }
 
 type ManifestWithOAuth = chrome.runtime.Manifest & {
@@ -94,6 +110,29 @@ function buildAuthErrorMessage(error: unknown): string {
   return `Google auth failed: ${raw}`;
 }
 
+function buildTrackingAuthErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const normalized = raw.toLowerCase();
+
+  if (!isTrackingConfigured() || !TRACKING_GOOGLE_CLIENT_ID) {
+    return "Read statuses are not configured in this extension build.";
+  }
+
+  if (normalized.includes("access_denied") || normalized.includes("did not approve") || normalized.includes("cancel")) {
+    return "Read status sign-in was canceled. Try Enable Read Statuses again.";
+  }
+
+  if (normalized.includes("state mismatch")) {
+    return "Read status sign-in failed because the Google redirect response did not match the request. Try again.";
+  }
+
+  if (normalized.includes("invalid_client") || normalized.includes("client_id")) {
+    return "The hosted read status Google client is not configured correctly for this extension. Rebuild with the correct tracking Google client.";
+  }
+
+  return `Read status sign-in failed: ${raw}`;
+}
+
 async function persistSession(session: ApiSession): Promise<ApiSession> {
   await chrome.storage.local.set({ [SESSION_KEY]: session });
   return session;
@@ -126,22 +165,82 @@ async function readStoredSession(): Promise<ApiSession | null> {
   return (result[SESSION_KEY] as ApiSession | undefined) ?? null;
 }
 
-async function fetchTrackingApi(path: string, init?: RequestInit) {
-  if (!isTrackingBetaBuild()) {
-    throw new Error("Read statuses are not available in this build.");
+async function readStoredTrackingSession(): Promise<StoredTrackingSession | null> {
+  const result = await chrome.storage.local.get(TRACKING_SESSION_KEY);
+  return (result[TRACKING_SESSION_KEY] as StoredTrackingSession | undefined) ?? null;
+}
+
+async function persistTrackingSession(storedSession: StoredTrackingSession): Promise<TrackingSession> {
+  await chrome.storage.local.set({ [TRACKING_SESSION_KEY]: storedSession });
+  return storedSession.session;
+}
+
+async function clearTrackingSession(): Promise<void> {
+  await chrome.storage.local.remove(TRACKING_SESSION_KEY);
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function randomBase64Url(size = 32): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(size));
+  return base64UrlEncode(bytes);
+}
+
+async function fetchTrackingApi(
+  path: string,
+  init?: RequestInit,
+  options: { auth?: "none" | "required" } = {}
+) {
+  if (!isTrackingConfigured()) {
+    throw new Error("Read statuses are not configured in this extension build.");
   }
 
   const apiBaseUrl = resolveApiBaseUrl();
+  const headers = new Headers(init?.headers);
+
+  if (options.auth === "required") {
+    const storedSession = await readStoredTrackingSession();
+    if (!storedSession) {
+      throw new Error("Enable Read Statuses in Superbhuman settings before tracking best-effort opens.");
+    }
+
+    headers.set("Authorization", `Bearer ${storedSession.sessionToken}`);
+  }
 
   try {
-    const response = await fetch(`${apiBaseUrl}${path}`, init);
+    const response = await fetch(`${apiBaseUrl}${path}`, {
+      ...init,
+      headers
+    });
+
+    if (options.auth === "required" && response.status === 401) {
+      await clearTrackingSession();
+      throw new Error("Your Read Statuses session expired. Enable Read Statuses again in Superbhuman settings.");
+    }
+
     return {
       apiBaseUrl,
       response
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Read Statuses session expired")) {
+      throw error;
+    }
+
     throw new Error(
-      `Read statuses are temporarily unavailable because the beta backend at ${apiBaseUrl} could not be reached. Core Gmail features remain usable.`
+      `Read statuses are temporarily unavailable because the hosted backend at ${apiBaseUrl} could not be reached. Core Gmail features remain usable.`
     );
   }
 }
@@ -155,10 +254,10 @@ async function getGoogleAuthorization(interactive = false): Promise<GoogleAuthor
 
   try {
     recordAuthStage(interactive ? "Requesting interactive OAuth token" : "Requesting cached OAuth token");
-    const result = await chrome.identity.getAuthToken({
+    const result = (await chrome.identity.getAuthToken({
       interactive,
       scopes: getRequestedScopes()
-    }) as chrome.identity.GetAuthTokenResult | string;
+    })) as chrome.identity.GetAuthTokenResult | string;
     const token = typeof result === "string" ? result : result?.token;
     const grantedScopes = typeof result === "string" ? getRequestedScopes() : (result?.grantedScopes ?? getRequestedScopes());
 
@@ -194,7 +293,7 @@ async function bootstrapSession(interactive = false): Promise<ApiSession | null>
     throw new Error("Could not load Gmail profile.");
   }
 
-  const profile = (await profileResponse.json()) as { emailAddress?: string; messagesTotal?: number };
+  const profile = (await profileResponse.json()) as { emailAddress?: string };
   const session = await buildLocalSession(profile.emailAddress, authorization.token, authorization.grantedScopes);
   recordAuthStage("Session ready");
   return persistSession(session);
@@ -212,6 +311,111 @@ async function getSession(): Promise<ApiSession | null> {
   }
 
   return session;
+}
+
+async function startTrackingAuth(): Promise<TrackingSession> {
+  if (!isTrackingConfigured() || !TRACKING_GOOGLE_CLIENT_ID) {
+    throw new Error("Read statuses are not configured in this extension build.");
+  }
+
+  const redirectUri = chrome.identity.getRedirectURL("tracking-auth");
+  const codeVerifier = randomBase64Url(64);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  const state = randomBase64Url(32);
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.searchParams.set("client_id", TRACKING_GOOGLE_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", TRACKING_AUTH_SCOPES.join(" "));
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("prompt", "select_account");
+
+  try {
+    const responseUrl = await chrome.identity.launchWebAuthFlow({
+      url: authUrl.toString(),
+      interactive: true
+    });
+
+    if (!responseUrl) {
+      throw new Error("Read status sign-in did not return a redirect URL.");
+    }
+
+    const redirected = new URL(responseUrl);
+    if (redirected.searchParams.get("state") !== state) {
+      throw new Error("state mismatch");
+    }
+
+    const code = redirected.searchParams.get("code");
+    if (!code) {
+      throw new Error(redirected.searchParams.get("error") ?? "missing auth code");
+    }
+
+    const { response } = await fetchTrackingApi("/auth/google/exchange", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        code,
+        codeVerifier,
+        redirectUri
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const exchange = (await response.json()) as TrackingAuthExchangeResponse;
+    return persistTrackingSession({
+      sessionToken: exchange.sessionToken,
+      session: exchange.session
+    });
+  } catch (error) {
+    throw new Error(buildTrackingAuthErrorMessage(error));
+  }
+}
+
+async function getTrackingSession(): Promise<TrackingSession | null> {
+  if (!isTrackingConfigured()) {
+    return null;
+  }
+
+  const storedSession = await readStoredTrackingSession();
+  if (!storedSession) {
+    return null;
+  }
+
+  try {
+    const { response } = await fetchTrackingApi("/auth/session", undefined, { auth: "required" });
+    if (!response.ok) {
+      return storedSession.session;
+    }
+
+    const session = (await response.json()) as TrackingSession;
+    await persistTrackingSession({
+      ...storedSession,
+      session
+    });
+    return session;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("session expired")) {
+      return null;
+    }
+
+    return storedSession.session;
+  }
+}
+
+async function logoutTrackingSession(): Promise<void> {
+  const storedSession = await readStoredTrackingSession();
+  if (storedSession) {
+    await fetchTrackingApi("/auth/logout", { method: "POST" }, { auth: "required" }).catch(() => undefined);
+  }
+
+  await clearTrackingSession();
 }
 
 async function getAuthDiagnostics(): Promise<AuthDiagnostics> {
@@ -249,7 +453,7 @@ async function gmailApi(path: string, method = "GET", body?: unknown) {
     );
   });
 
-  let response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
+  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${authorization.token}`,
@@ -284,18 +488,21 @@ async function handleMessage(message: ExtensionMessage) {
       return bootstrapSession(true);
     case "gmail:api":
       return gmailApi(message.path, message.method, message.body);
+    case "tracking:auth-start":
+      return startTrackingAuth();
+    case "tracking:get-session":
+      return getTrackingSession();
+    case "tracking:logout":
+      await logoutTrackingSession();
+      return null;
     case "tracking:register": {
-      if (!isTrackingBetaBuild()) {
-        throw new Error("Read statuses are not available in this build.");
-      }
-
       const { apiBaseUrl, response } = await fetchTrackingApi("/track/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify(message.payload)
-      });
+      }, { auth: "required" });
 
       if (!response.ok) {
         throw new Error(`Tracking registration failed at ${apiBaseUrl}: ${response.status}`);
@@ -304,10 +511,6 @@ async function handleMessage(message: ExtensionMessage) {
       return null;
     }
     case "tracking:health": {
-      if (!isTrackingBetaBuild()) {
-        throw new Error("Read statuses are not available in this build.");
-      }
-
       const { apiBaseUrl, response } = await fetchTrackingApi("/healthz");
       if (!response.ok) {
         throw new Error(`Tracking API health check failed at ${apiBaseUrl}: ${response.status}`);
@@ -315,13 +518,33 @@ async function handleMessage(message: ExtensionMessage) {
 
       return response.json();
     }
-    case "tracking:status": {
-      if (!isTrackingBetaBuild()) {
-        throw new Error("Read statuses are not available in this build.");
+    case "tracking:list-messages": {
+      const searchParams = new URLSearchParams();
+      if (message.limit) {
+        searchParams.set("limit", String(message.limit));
       }
 
+      if (message.cursor) {
+        searchParams.set("cursor", message.cursor);
+      }
+
+      const query = searchParams.toString();
       const { apiBaseUrl, response } = await fetchTrackingApi(
-        `/track/status/${encodeURIComponent(message.token)}`
+        `/track/messages${query ? `?${query}` : ""}`,
+        undefined,
+        { auth: "required" }
+      );
+      if (!response.ok) {
+        throw new Error(`Tracking list failed at ${apiBaseUrl}: ${response.status}`);
+      }
+
+      return response.json() as Promise<TrackingMessagesPage>;
+    }
+    case "tracking:status": {
+      const { apiBaseUrl, response } = await fetchTrackingApi(
+        `/track/status/${encodeURIComponent(message.token)}`,
+        undefined,
+        { auth: "required" }
       );
       if (!response.ok) {
         throw new Error(`Tracking lookup failed at ${apiBaseUrl}: ${response.status}`);
