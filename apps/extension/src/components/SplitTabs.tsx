@@ -8,6 +8,7 @@ interface SplitTabsProps {
   visibleCount: number;
   importantCount: number;
   otherCount: number;
+  showReadStatuses: boolean;
   trackedCount: number;
   openedCount: number;
   onModeChange(mode: SplitMode): void;
@@ -30,9 +31,11 @@ export function SplitTabs(props: SplitTabsProps) {
         Other {props.otherCount}
       </button>
       <span className="sb-kbd">{props.visibleCount} visible</span>
-      <button className="sb-tab" data-active="false" onClick={props.onOpenReadStatuses}>
-        Read Statuses {props.openedCount}/{props.trackedCount}
-      </button>
+      {props.showReadStatuses ? (
+        <button className="sb-tab" data-active="false" onClick={props.onOpenReadStatuses}>
+          Read Statuses {props.openedCount}/{props.trackedCount}
+        </button>
+      ) : null}
       <button className="sb-tab" data-active="false" onClick={props.onOpenCommandCenter}>
         Command Center
       </button>

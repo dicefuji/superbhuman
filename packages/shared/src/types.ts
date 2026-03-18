@@ -152,10 +152,6 @@ export interface CommandDefinition {
 }
 
 export interface UserPreferences {
-  apiBaseUrl: string;
-  approvedTrackingOrigin?: string;
-  lastApiHealthCheckAt?: string;
-  lastApiHealthStatus?: "ok" | "error";
   commandCenterShortcut: KeyboardShortcut;
   trackingEnabledByDefault: boolean;
   splitOverrides: SplitOverride[];
@@ -192,7 +188,7 @@ export type ExtensionMessage =
   | { type: "auth:get-diagnostics" }
   | { type: "auth:interactive-login" }
   | { type: "gmail:api"; path: string; method?: string; body?: unknown }
-  | { type: "tracking:health"; apiBaseUrl?: string }
+  | { type: "tracking:health" }
   | { type: "tracking:status"; token: string }
   | { type: "tracking:register"; payload: TrackRegisterRequest };
 

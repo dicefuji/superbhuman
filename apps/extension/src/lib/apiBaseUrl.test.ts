@@ -4,9 +4,11 @@ import {
   assertSupportedTrackingApiBaseUrl,
   getTrackingOrigin,
   getTrackingOriginPermissionPattern,
+  isTrackingBetaBuild,
   isLocalApiBaseUrl,
   isPublicHttpsApiBaseUrl,
-  normalizeApiBaseUrl
+  normalizeApiBaseUrl,
+  resolveApiBaseUrl
 } from "./apiBaseUrl";
 
 describe("apiBaseUrl helpers", () => {
@@ -32,5 +34,14 @@ describe("apiBaseUrl helpers", () => {
   it("builds an origin permission pattern", () => {
     expect(getTrackingOrigin("https://track.example.com/path")).toBe("https://track.example.com");
     expect(getTrackingOriginPermissionPattern("https://track.example.com/path")).toBe("https://track.example.com/*");
+  });
+
+  it("reflects the build-time beta configuration", () => {
+    if (isTrackingBetaBuild()) {
+      expect(resolveApiBaseUrl()).toMatch(/^https?:\/\//);
+      return;
+    }
+
+    expect(() => resolveApiBaseUrl()).toThrow("Read statuses beta is not configured for this build.");
   });
 });

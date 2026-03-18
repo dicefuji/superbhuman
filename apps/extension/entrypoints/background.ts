@@ -1,18 +1,13 @@
 import {
-  DEFAULT_PREFERENCES,
   type ApiSession,
   type AuthDiagnostics,
-  type ExtensionMessage,
-  type UserPreferences
+  type ExtensionMessage
 } from "@superbhuman/shared";
 
-import { API_BASE_URL } from "../src/env";
+import { isTrackingBetaBuild, resolveApiBaseUrl } from "../src/lib/apiBaseUrl";
 import { getRequiredGoogleScopes, hasConfiguredGoogleOAuth, hasRequiredGoogleScopes } from "../src/lib/googleAuth";
-import { assertSupportedTrackingApiBaseUrl } from "../src/lib/apiBaseUrl";
-import { hasTrackingOriginPermission } from "../src/lib/trackingPermissions";
 
 const SESSION_KEY = "apiSession";
-const PREFERENCES_KEY = "preferences";
 let lastAuthStage: string | undefined;
 let lastAuthError: string | undefined;
 let lastRawAuthError: string | undefined;
@@ -29,16 +24,6 @@ type ManifestWithOAuth = chrome.runtime.Manifest & {
     scopes?: string[];
   };
 };
-
-async function getApiBaseUrl(override?: string): Promise<string> {
-  if (override?.trim()) {
-    return assertSupportedTrackingApiBaseUrl(override);
-  }
-
-  const result = await chrome.storage.sync.get(PREFERENCES_KEY);
-  const preferences = result[PREFERENCES_KEY] as Partial<UserPreferences> | undefined;
-  return assertSupportedTrackingApiBaseUrl(preferences?.apiBaseUrl || DEFAULT_PREFERENCES.apiBaseUrl || API_BASE_URL);
-}
 
 function getManifest(): ManifestWithOAuth {
   return chrome.runtime.getManifest() as ManifestWithOAuth;
@@ -141,18 +126,12 @@ async function readStoredSession(): Promise<ApiSession | null> {
   return (result[SESSION_KEY] as ApiSession | undefined) ?? null;
 }
 
-async function ensureTrackingPermission(apiBaseUrl: string): Promise<void> {
-  const hasPermission = await hasTrackingOriginPermission(apiBaseUrl);
-  if (!hasPermission) {
-    throw new Error(
-      `Superbhuman does not have permission to reach ${new URL(apiBaseUrl).origin}. Open settings, save or check that API URL, and approve the Chrome permission request.`
-    );
+async function fetchTrackingApi(path: string, init?: RequestInit) {
+  if (!isTrackingBetaBuild()) {
+    throw new Error("Read statuses are not available in this build.");
   }
-}
 
-async function fetchTrackingApi(path: string, init?: RequestInit, apiBaseUrlOverride?: string) {
-  const apiBaseUrl = await getApiBaseUrl(apiBaseUrlOverride);
-  await ensureTrackingPermission(apiBaseUrl);
+  const apiBaseUrl = resolveApiBaseUrl();
 
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, init);
@@ -160,9 +139,9 @@ async function fetchTrackingApi(path: string, init?: RequestInit, apiBaseUrlOver
       apiBaseUrl,
       response
     };
-  } catch (error) {
+  } catch {
     throw new Error(
-      `Could not reach tracking API at ${apiBaseUrl}. If this is local, make sure the server is running. If this is remote, use HTTPS and reload the extension after rebuilding.`
+      `Read statuses are temporarily unavailable because the beta backend at ${apiBaseUrl} could not be reached. Core Gmail features remain usable.`
     );
   }
 }
@@ -216,42 +195,7 @@ async function bootstrapSession(interactive = false): Promise<ApiSession | null>
   }
 
   const profile = (await profileResponse.json()) as { emailAddress?: string; messagesTotal?: number };
-  recordAuthStage("Bootstrapping Superbhuman API session");
-  let sessionResponse: Response;
-
-  try {
-    ({ response: sessionResponse } = await fetchTrackingApi("/session/google", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        accessToken: authorization.token,
-        email: profile.emailAddress,
-        grantedScopes: authorization.grantedScopes
-      })
-    }));
-  } catch (error) {
-    const raw = error instanceof Error ? error.message : String(error);
-    console.warn("[superbhuman] tracking API unavailable during auth bootstrap, using local session fallback", {
-      error: raw
-    });
-    const localSession = await buildLocalSession(profile.emailAddress, authorization.token, authorization.grantedScopes);
-    recordAuthStage("Session ready with local fallback", undefined, raw);
-    return persistSession(localSession);
-  }
-
-  if (!sessionResponse.ok) {
-    const raw = `api_session_status_${sessionResponse.status}`;
-    console.warn("[superbhuman] tracking API returned an error during auth bootstrap, using local session fallback", {
-      status: sessionResponse.status
-    });
-    const localSession = await buildLocalSession(profile.emailAddress, authorization.token, authorization.grantedScopes);
-    recordAuthStage("Session ready with local fallback", undefined, raw);
-    return persistSession(localSession);
-  }
-
-  const session = (await sessionResponse.json()) as ApiSession;
+  const session = await buildLocalSession(profile.emailAddress, authorization.token, authorization.grantedScopes);
   recordAuthStage("Session ready");
   return persistSession(session);
 }
@@ -341,6 +285,10 @@ async function handleMessage(message: ExtensionMessage) {
     case "gmail:api":
       return gmailApi(message.path, message.method, message.body);
     case "tracking:register": {
+      if (!isTrackingBetaBuild()) {
+        throw new Error("Read statuses are not available in this build.");
+      }
+
       const { apiBaseUrl, response } = await fetchTrackingApi("/track/register", {
         method: "POST",
         headers: {
@@ -356,7 +304,11 @@ async function handleMessage(message: ExtensionMessage) {
       return null;
     }
     case "tracking:health": {
-      const { apiBaseUrl, response } = await fetchTrackingApi("/healthz", undefined, message.apiBaseUrl);
+      if (!isTrackingBetaBuild()) {
+        throw new Error("Read statuses are not available in this build.");
+      }
+
+      const { apiBaseUrl, response } = await fetchTrackingApi("/healthz");
       if (!response.ok) {
         throw new Error(`Tracking API health check failed at ${apiBaseUrl}: ${response.status}`);
       }
@@ -364,6 +316,10 @@ async function handleMessage(message: ExtensionMessage) {
       return response.json();
     }
     case "tracking:status": {
+      if (!isTrackingBetaBuild()) {
+        throw new Error("Read statuses are not available in this build.");
+      }
+
       const { apiBaseUrl, response } = await fetchTrackingApi(
         `/track/status/${encodeURIComponent(message.token)}`
       );

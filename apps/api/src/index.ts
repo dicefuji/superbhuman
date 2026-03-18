@@ -1,9 +1,8 @@
-import type { TrackOpenEvent, TrackRegisterRequest } from "@superbhuman/shared";
+import type { TrackRegisterRequest } from "@superbhuman/shared";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 
 import { ensureSchema } from "./db/postgres.ts";
-import { createSession } from "./services/sessionService.ts";
 import { createTrackingStore } from "./services/trackingStore.ts";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -77,23 +76,10 @@ async function main() {
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/session/google") {
-        const body = await readJson<{ accessToken: string; email?: string; grantedScopes?: string[] }>(request);
-        sendJson(response, 200, createSession(body.email, body.accessToken, body.grantedScopes));
-        return;
-      }
-
       if (request.method === "POST" && url.pathname === "/track/register") {
         const payload = await readJson<TrackRegisterRequest>(request);
         await trackingStore.register(payload);
         sendJson(response, 200, { ok: true });
-        return;
-      }
-
-      if (request.method === "POST" && url.pathname === "/track/open-event") {
-        const payload = await readJson<TrackOpenEvent>(request);
-        const status = await trackingStore.recordOpen(payload);
-        sendJson(response, 200, status);
         return;
       }
 

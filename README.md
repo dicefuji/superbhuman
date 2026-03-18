@@ -1,6 +1,6 @@
 # Superbhuman
 
-Private-first Gmail power layer inspired by Superhuman and Simplehuman.
+Gmail power layer inspired by Superhuman and Simplehuman.
 
 ## What It Is
 
@@ -10,9 +10,16 @@ Superbhuman is a Chrome extension that sits inside Gmail and adds:
 - faster keyboard-driven inbox navigation
 - an `Important` / `Other` split inbox
 - mass archive flows
-- read-status tracking for sent emails
+- Gmail API-powered cleanup actions
 
-This repository is a v1 prototype. It is optimized for local/private use and rapid iteration, not polished public distribution.
+The current product direction is:
+
+- public Chrome extension first
+- Gmail features work with no user-run backend
+- Gmail auth stays fully inside the extension with `chrome.identity`
+- read statuses are a separate hosted beta, not part of the default public build
+
+See [PUBLIC_LAUNCH_CHECKLIST.md](./PUBLIC_LAUNCH_CHECKLIST.md) for the remaining operational work needed for a public launch.
 
 ## Current V1 Status
 
@@ -21,20 +28,19 @@ Working now:
 - Gmail overlay UI and floating top bar
 - command center and keyboard navigation shell
 - split inbox filtering over visible Gmail thread rows
-- read-status panel with tracked sends and open counts
-- local tracking API for registration, health checks, and status refresh
+- Gmail auth and Gmail API actions directly from the extension
 - bulk archive preview and command wiring
 
-Partially implemented or still constrained:
+Phase 1 public-build constraints:
 
-- Gmail API-backed actions only work after you configure a real Chrome Extension OAuth client and connect Gmail from settings
-- local `127.0.0.1` tracking can prove the API is alive, but it cannot produce real remote read receipts
-- real read receipts require a public HTTPS API URL because Gmail’s image proxy fetches images from Google’s servers, not from your laptop
+- Gmail API features only work after you configure a real Chrome Extension OAuth client and connect Gmail from settings
+- read statuses are hidden unless the extension is built with the tracking beta flags
+- the backend is no longer required for Gmail auth or Gmail actions
 
 ## Repository Layout
 
 - `apps/extension`: Chrome MV3 extension built with WXT + React
-- `apps/api`: Node API for session bootstrap and read-status tracking
+- `apps/api`: Node API for hosted read-status tracking beta
 - `packages/shared`: shared types, commands, and pure domain logic
 
 ## Prerequisites
@@ -57,25 +63,15 @@ pnpm install
 pnpm build
 ```
 
-3. Start the API.
+3. Build the extension with a stable ID and your Chrome Extension OAuth client.
 
 ```bash
-pnpm --filter @superbhuman/api start
+export WXT_EXTENSION_KEY='YOUR_EXTENSION_PUBLIC_KEY'
+export WXT_GOOGLE_OAUTH_CLIENT_ID='YOUR_CLIENT_ID.apps.googleusercontent.com'
+pnpm --filter @superbhuman/extension build
 ```
 
-4. Confirm the API is alive.
-
-```bash
-curl http://127.0.0.1:8787/healthz
-```
-
-Expected response:
-
-```json
-{"ok":true}
-```
-
-5. Load the Chrome extension.
+4. Load the Chrome extension.
 
 - Open `chrome://extensions`
 - Turn on Developer Mode
@@ -84,55 +80,50 @@ Expected response:
 
 If the file picker hides `.output`, use `Cmd + Shift + .` on macOS to show hidden folders.
 
-6. Open Gmail and then open the extension settings page from `chrome://extensions`.
+5. Open the extension settings page from `chrome://extensions`.
 
-7. In settings:
+6. In settings:
 
-- set the API base URL to `http://127.0.0.1:8787` for local testing
-- click `Check API`
-- if you have not configured Google OAuth yet, `Connect Gmail` will stay unavailable
+- click `Connect Gmail`
+- approve the Gmail scopes
+- once `Gmail Auth` says `Ready`, Gmail-powered features are usable
 
-8. Refresh Gmail after saving settings or reloading the extension.
+7. Refresh Gmail after connecting or reloading the extension.
 
-## Private Real Integration Setup
+The default public build does not require the API at all.
 
-Use this path when you want real Gmail API actions and real read receipts, but only for a private test group.
+## Public Product Path
 
-### 1. Prepare a stable extension ID
+The intended public install flow is:
 
-Superbhuman now reads two build-time environment variables from the extension build:
+1. install extension
+2. connect Gmail
+3. use command center, split inbox, archive, and Gmail cleanup actions
 
-- `WXT_EXTENSION_KEY`
-- `WXT_GOOGLE_OAUTH_CLIENT_ID`
+Design rules for the public build:
 
-Set a stable `WXT_EXTENSION_KEY` first, then build the extension once. The extension ID generated from that key is the ID you will use when creating the Chrome Extension OAuth client.
+- no local API required
+- no user-provided tracking URL
+- no Gmail access tokens sent to the Superbhuman backend
+- backend outages must not block Gmail features
 
-Example:
+## Google OAuth Setup
 
-```bash
-export WXT_EXTENSION_KEY='YOUR_EXTENSION_PUBLIC_KEY'
-pnpm --filter @superbhuman/extension build
-```
+Use a stable extension ID and a Chrome Extension OAuth client that matches it.
 
-Then load the unpacked extension and copy the extension ID from `chrome://extensions`.
-
-### 2. Configure Google Auth Platform
-
-In Google Cloud:
-
-1. Create or choose a project.
+1. Create or choose a Google Cloud project.
 2. Enable the Gmail API.
 3. Configure Google Auth Platform branding.
 4. Set Audience to `External`.
-5. Add your own account and any teammates as `Test users`.
+5. Add your test users while the app is still private.
 6. Add only these Gmail scopes:
    - `https://www.googleapis.com/auth/gmail.modify`
    - `https://www.googleapis.com/auth/gmail.settings.basic`
    - `https://www.googleapis.com/auth/userinfo.email`
 7. Create an OAuth client of type `Chrome Extension`.
-8. Paste the stable extension ID from the previous step.
+8. Paste the stable extension ID from `chrome://extensions`.
 
-Then export the client ID and rebuild:
+Then rebuild:
 
 ```bash
 export WXT_EXTENSION_KEY='YOUR_EXTENSION_PUBLIC_KEY'
@@ -142,54 +133,33 @@ pnpm --filter @superbhuman/extension build
 
 Reload the unpacked extension after every rebuild.
 
-### 3. Bring up the tracking API
+## Internal Read-Status Beta
 
-Local API for development:
+Read statuses are phase 2. They are not part of the normal public build.
 
-```bash
-pnpm --filter @superbhuman/api start
-curl http://127.0.0.1:8787/healthz
-```
+Only beta builds should include them, using a fixed hosted backend defined at build time.
 
-Expected response:
-
-```json
-{"ok":true}
-```
-
-For real recipient opens, expose that API over public HTTPS with any temporary tunnel or deployment that forwards to the API process.
-
-Example shape:
-
-- `https://your-public-tracking-host.example.com`
-
-For a quick local-to-public tunnel on macOS:
+Required extension build flags:
 
 ```bash
-brew install cloudflared
-cloudflared tunnel --url http://127.0.0.1:8787
+export WXT_PUBLIC_ENABLE_TRACKING_BETA='true'
+export WXT_PUBLIC_TRACKING_API_BASE_URL='https://track.superbhuman.example'
 ```
 
-Then put that public HTTPS URL into the extension settings and click `Check API`.
+When those flags are absent, the public extension:
 
-### 4. Connect Gmail and verify
+- hides read-status controls
+- does not ask users for a backend URL
+- keeps all Gmail features usable with no backend dependency
 
-In the extension settings page:
+### Beta Backend Scope
 
-1. Confirm `Gmail Auth` says `Ready`.
-2. Confirm `Tracking API` says `Reachable`.
-3. Confirm `Tracking Reachability` says `Public HTTPS` if you want real read receipts.
-4. Click `Connect Gmail`.
-5. Approve the Gmail scopes with a configured test user account.
+The hosted read-status backend should stay narrow:
 
-After that:
-
-- `Get Me To Zero` preview/run should work
-- sender/company nuke should work
-- tracked emails should register in the `Read Statuses` panel
-- recipient opens should increment `openCount` if the API URL is public HTTPS
-
-If the tracking API is offline during `Connect Gmail`, the extension now keeps a local Gmail session fallback so Gmail auth can still become `Ready`. Read receipts remain unavailable until the tracking API is reachable again.
+- `GET /healthz`
+- `POST /track/register`
+- `GET /track/status/:token`
+- `GET /t/:token.gif`
 
 ## Everyday Testing
 
@@ -205,7 +175,9 @@ If the tracking API is offline during `Connect Gmail`, the extension now keeps a
 - counts in the top bar show how many visible Gmail rows currently fall into each split
 - use command center actions like `Move to Important` or `Move to Other` on a selected thread to tune the split
 
-### Read Statuses
+### Internal Read-Status Beta
+
+Only beta builds expose the read-status UI. In a beta build:
 
 - open Gmail compose
 - verify the compose toolbar shows `Read Status On`
@@ -213,42 +185,9 @@ If the tracking API is offline during `Connect Gmail`, the extension now keeps a
 - open the `Read Statuses` button in the floating bar
 - your tracked send should appear there with subject, recipients, sent time, and current open count
 
-### Local Read-Status Testing
+The read-status backend must be public HTTPS and continuously reachable while recipient opens are happening.
 
-Local API mode is useful for confirming:
-
-- the extension can register a tracked send
-- the settings health check works
-- the read-status panel stores and refreshes tracked messages
-
-Local API mode is not enough for real recipient opens from Gmail or other mail clients. For real read receipts, the API URL must be publicly reachable over HTTPS.
-
-Why:
-
-- the extension can call `127.0.0.1` from your browser
-- the recipient’s mail client cannot
-- Gmail usually proxies images through Google’s servers, so the tracking pixel must be reachable from the public internet
-
-## Public Read Receipts
-
-To get actual opens recorded:
-
-1. run or deploy the API somewhere public
-2. expose it over HTTPS
-3. set the extension API base URL to that public HTTPS origin
-4. save or check that URL in settings and approve the Chrome permission request
-5. rebuild and reload the extension if your OAuth config changed
-
-Example shape:
-
-- `https://your-tracking-api.example.com`
-
-The API must expose:
-
-- `GET /healthz`
-- `POST /track/register`
-- `GET /track/status/:token`
-- `GET /t/:token.gif`
+Public builds should not instruct users to run local tunnels or paste backend URLs.
 
 ## Development Commands
 
@@ -296,36 +235,28 @@ pnpm --filter @superbhuman/api typecheck
 - add that account as a test user in Google Auth Platform
 - wait for Google Cloud changes to propagate, then reconnect
 
-### `Check API` says `Could not reach tracking API`
+### Read statuses show as unavailable
 
-- make sure the API process is running
-- run `curl http://127.0.0.1:8787/healthz`
-- confirm the settings page is pointing at the same origin
-- reload the extension after rebuilding
-- if the URL is public HTTPS, save or check it in settings and approve the Chrome permission request
+- this is expected in the normal public build
+- read statuses only appear when the extension is built with the beta tracking flags
 
-### `Auth Diagnostics` says `Session ready with local fallback`
+### Read-status beta backend cannot be reached
 
-- Google auth succeeded, but the tracking API was unavailable during session bootstrap
-- Gmail API features should still work
-- start the API, then click `Check API`
-- switch the API base URL to a public HTTPS origin if you want real remote opens
-
-### `Read status registration failed`
-
-- this usually means the extension could not reach the tracking API or does not have permission to reach its origin
-- fix the API URL or start the API process first
-- if the URL is public HTTPS, approve the permission prompt from settings first
+- core Gmail features should still work
+- verify the hosted backend responds to `/healthz`
+- rebuild the extension with the correct `WXT_PUBLIC_TRACKING_API_BASE_URL`
 
 ### Read statuses panel shows sends but open count never changes
 
-- if the API URL is local, this is expected
-- use a public HTTPS API endpoint for real remote opens
+- the hosted backend must be public HTTPS
+- the backend must still be up when the recipient opens the email
+- Gmail often proxies images, so the pixel cannot point at localhost
 
 ## Notes
 
-- Postgres is optional in v1. If `DATABASE_URL` is unset, the API falls back to in-memory tracking storage.
-- In-memory mode resets tracked messages when the API process restarts.
+- Phase 1 is Gmail features first.
+- Read statuses are phase 2 and should stay behind a fixed-origin hosted beta until auth, durable storage, monitoring, and abuse controls are in place.
+- The backend should not receive Gmail access tokens.
 
 ## Official Docs
 

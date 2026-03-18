@@ -84,6 +84,6 @@ export function fetchTrackingStatus(token: string) {
   return sendMessage<TrackerStatus>({ type: "tracking:status", token });
 }
 
-export function checkTrackingApiHealth(apiBaseUrl?: string) {
-  return sendMessage<{ ok: boolean }>({ type: "tracking:health", apiBaseUrl });
+export function checkTrackingApiHealth() {
+  return sendMessage<{ ok: boolean }>({ type: "tracking:health" });
 }
